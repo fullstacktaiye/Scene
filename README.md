@@ -3,8 +3,8 @@
 A fast, keyboard-first Linux launcher. See [`PRODUCT_PLAN.md`](PRODUCT_PLAN.md)
 for what Scene is meant to become.
 
-This repository currently contains **Milestone 4 — distro capability
-adapters**.
+This repository currently contains **Milestone 4.5 — overdue milestone
+items**.
 
 ## Build and run
 
@@ -36,9 +36,21 @@ opening a second one.
 | Printable text | Filters and re-ranks the results |
 | Up / Down | Moves the selection, wrapping at either end |
 | Enter | Runs the selected result |
-| Escape | Clears the query; on an empty query, hides the launcher |
+| Escape | Clears the query; cancels a running action; withdraws a confirmation; on an empty query, hides the launcher |
 | Click | Selects and runs, through the same path as Enter |
 | Ctrl+Q | Quits Scene |
+
+Results you use often, and used recently, rise within their group. Set
+`SCENE_HISTORY=off` to rank on the deterministic baseline alone; the history
+itself lives in `$XDG_STATE_HOME/scene/history` and can be deleted at any
+time.
+
+Before you type anything, the applications group shows only its top five —
+the ones you actually use, then alphabetical order to fill. There are 81
+installed applications on the development machine, and listing all of them
+buries every other group. The heading says `5 of 81` so the short list is
+never mistaken for the whole set, and typing searches all of them. Every other
+group is a small catalogue Scene itself owns, so it shows in full.
 
 Three keywords reach the package adapter for this machine:
 
@@ -62,12 +74,74 @@ src/
 ├── packages.rs      distro capability adapters
 ├── actions.rs       typed actions and their outcomes
 ├── system.rs        executable discovery and bounded subprocesses
-├── ui.rs            window, search field, result list, footer
+├── ui.rs            window, search field, result list, footer, UI smoke suite
 └── style.css        the launcher's appearance
+
+data/
+├── dev.scene.Scene.desktop       the desktop entry
+└── dev.scene.Scene.metainfo.xml  AppStream metadata for packaging
 ```
 
 `ui.rs` renders what `search` produced and reports what `actions` returned. It
 never decides either, so the styling can change without touching the logic.
+
+## Milestone 4.5 status
+
+Four checklist items whose milestone had already passed were still open.
+Milestone 4.5 collected and closed them, so that "Milestone 4 is done" cannot
+quietly mean "done except for the parts nobody is tracking".
+
+- [x] **Keyboard-only smoke path.** `src/ui.rs` now carries a UI smoke suite:
+      one test that builds the real launcher against stated items, presents
+      it, and drives the whole contract — activation and focus, typing,
+      Up/Down with wrapping, the empty-result state, Enter, Escape clearing
+      then closing, re-activation resetting query and selection, a
+      confirmation that a result-row click cannot answer, and a long action
+      cancelled from the keyboard. It skips itself with a printed reason where
+      there is no display. Its stated limit: keys enter at `Launcher::key`,
+      the method the window's key controller calls, so the compositor
+      delivering a physical key press to that controller is what the manual
+      pass covers.
+
+      Driven by hand on 2026-08-24, Fedora 44 / KDE Plasma 6.7 / Wayland: the
+      same sequence, from a real keyboard, including an `install` answer that
+      stopped at its confirmation and was withdrawn with Escape. The run left
+      its own evidence in `$XDG_STATE_HOME/scene/history` — `scene.reporting`,
+      `packages.metadata` and `terminal.open`, and *not* the withdrawn
+      `install`, because use is recorded when an action starts rather than
+      when it is offered. On the next activation the terminal ranked above
+      where it had sat before.
+- [x] **Recent/frequent ranking.** `search::History` records what was chosen
+      and lifts it within its group. The adjustment is bounded — 24 for
+      frequency plus 15 for recency, under the 40-point gap the matcher puts
+      between a title hit and a keyword hit — so use can reorder results
+      within a group but can never overturn a title match or cross a group
+      boundary. Ranking is still deterministic in the sense the plan means:
+      the history is an argument to `search`, not ambient state, so the same
+      query, items and history always give the same order. `SCENE_HISTORY=off`
+      turns it off.
+- [x] **Fedora packaging check.** Performed against the guidelines' own
+      source and recorded in `docs/fedora-packaging.md`. The desktop entry and
+      package independence already comply. Two gaps were closed rather than
+      logged: the repository declared MIT with no `LICENSE` file for
+      `%license` to point at, and shipped no AppStream metainfo, which a GUI
+      application is expected to install. `data/dev.scene.Scene.metainfo.xml`
+      passes `appstreamcli validate --no-net`. The spec file, an icon of
+      Scene's own, screenshots and a mock build are Milestone 8's.
+- [x] **Launched-program outcomes.** A detached program is now watched for
+      400 ms: one that dies in that window reports its real exit status
+      instead of the success Scene used to claim, and if the launcher has
+      already closed it comes back to show the failure. An application handed
+      to the desktop has no exit status Scene can read, so it reports
+      `Started` — a different answer from `Succeeded` — and the built-in
+      "What Scene Reports" result says so in words.
+
+### What is deliberately not here
+
+Support for a `.desktop` entry's declared additional actions ("New Private
+Window") stays deferred to **Milestone 6** and parity P6, where a result can
+carry several operations, rather than becoming a special case in application
+discovery.
 
 ## Milestone 4 status
 
@@ -113,6 +187,12 @@ nothing matches; `dnf check-update` exits 100 when updates exist. Everything
 else non-zero is still reported as a failure with the tool's own message.
 `dnf` is run with `--assumeno` so a repository-key prompt is declined rather
 than waiting on closed input.
+
+Re-run during Milestone 4.5 against `debian:stable-slim`, `archlinux:latest`
+and `fedora:latest`, and every one of those exit codes still holds. The run
+also confirmed the codes that are *not* accepted are failures worth reporting:
+`apt-get install` answers 100 for a package that does not exist, and `dnf
+install` and `pacman --sync` answer 1.
 
 ### Privilege
 
@@ -181,8 +261,8 @@ Verified on Fedora 44, KDE Plasma 6.7, Wayland, GTK 4.22.
       same `Outcome` states as everything else.
 - [x] A valid `.desktop` entry for Scene itself — `data/dev.scene.Scene.desktop`
       passes `desktop-file-validate`.
-- [ ] Recent/frequent ranking — deliberately deferred. The plan requires the
-      deterministic baseline first, and that has only just landed.
+- [x] Recent/frequent ranking — added in Milestone 4.5, once the deterministic
+      baseline the plan requires was in place.
 
 Launching was verified end to end: executing a discovered item returned
 `Succeeded("Opened KCalc")` and the process actually appeared. That check is
@@ -208,15 +288,14 @@ Verified on Fedora 44, KDE Plasma, Wayland, GTK 4.22.
 - [x] Repeated activation has no duplicate windows or stale state — three extra
       `scene` invocations left one process, one window and a cleared query.
 - [x] UI styling can evolve without changing search or action logic.
-- [ ] Keyboard-only smoke path — Up/Down, Enter and Escape are wired and their
-      logic is unit-tested, but this Wayland session has no input-injection
-      tool, so nobody has driven them from a real keyboard yet.
+- [x] Keyboard-only smoke path — covered by the UI smoke suite added in
+      Milestone 4.5, which drives the whole contract against real widgets.
 
-Fifty-three unit tests cover ranking determinism, grouping, case and
-whitespace handling, category labelling, provider isolation, package-name
-validation, capability detection, adapter argument vectors, and the action
-outcomes for missing executables, cancellation, output capture, accepted exit
-codes, and timeouts.
+Sixty-nine tests cover ranking determinism, grouping, case and whitespace
+handling, category labelling, provider isolation, package-name validation,
+capability detection, adapter argument vectors, history bounds and
+persistence, launch watching, and the action outcomes for missing executables,
+cancellation, output capture, accepted exit codes, and timeouts.
 Ranking tests run against a fixture rather than the live index, so they do not
 depend on what happens to be installed. The launcher starts with no GTK or CSS
 warnings on stderr.
@@ -248,7 +327,8 @@ HighContrast theme is active.
 
 `docs/krunner-parity.md` records what KRunner actually ships on Plasma 6.7 —
 31 runners, read off this machine — and the P1-P6 track to match and exceed
-it. Milestone 2 completes parity item **P1**; Milestone 4 completes most of
+it. Milestone 2 and Milestone 4.5 together complete parity item **P1** except
+for a desktop entry's additional actions; Milestone 4 completes most of
 **P5**, whose remaining gap is showing installed and available packages as one
 merged result rather than separate rows.
 

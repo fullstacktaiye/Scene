@@ -5,19 +5,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Scene is a keyboard-first Linux launcher: one Rust binary against native GTK 4,
 KDE Plasma / Wayland first. `PRODUCT_PLAN.md` is the product authority and
 milestone tracker; `AGENTS.md` holds the contributor conventions (commit style,
-naming, module ownership) and applies here too. `docs/krunner-parity.md` and
-`docs/copilot-key.md` record verified machine findings, not aspirations —
-correct them rather than working around them in code.
+naming, module ownership) and applies here too. `docs/krunner-parity.md`,
+`docs/copilot-key.md` and `docs/fedora-packaging.md` record verified machine
+findings, not aspirations — correct them rather than working around them in
+code.
 
-The repository is at **Milestone 4** (distro capability adapters).
+The repository is at **Milestone 4.5** (overdue milestone items).
 
 ## Commands
 
 ```sh
 cargo run --release                     # build and launch
-cargo test                              # 53 hermetic unit tests
+cargo test                              # 69 tests: 68 hermetic, 1 UI smoke
 cargo test ranking_is_stable_across_runs  # one test by name
 cargo test search::tests                # one module's tests
+cargo test ui::tests -- --nocapture     # the UI smoke suite alone
 cargo fmt --check
 cargo clippy --all-targets
 desktop-file-validate data/dev.scene.Scene.desktop   # after editing the entry
@@ -25,7 +27,11 @@ desktop-file-validate data/dev.scene.Scene.desktop   # after editing the entry
 
 GTK4 development headers are a prerequisite (`gtk4-devel` / `libgtk-4-dev` /
 `gtk4`). `SCENE_DIRECTORY=/path scene` overrides the configured-directory
-integration.
+integration, and `SCENE_HISTORY=off scene` turns recent/frequent ranking off.
+
+The UI smoke suite opens a real window for a fraction of a second while
+`cargo test` runs, which is expected. Where there is no display it prints
+`skipping the UI smoke suite` and passes.
 
 ## Architecture
 
@@ -44,8 +50,10 @@ and `answers(query)` for results that exist only while a query asks for them.
 Both are ranked by the same matcher, in one list.
 
 - **`search`** owns typed `Item`s, deterministic matching, ranking, grouping,
-  and the static built-in catalogue. It never executes anything and never
-  touches GTK widgets.
+  the static built-in catalogue, and `History` — the recent/frequent
+  adjustment, which is an explicit argument to `search()` rather than ambient
+  state, so the same query, items and history always give the same order. It
+  never executes anything and never touches GTK widgets.
 - **`ui`** renders what `search` produced and reports what `actions` returned.
   It decides neither. All appearance lives in `src/style.css`.
 - **`actions`** owns `Action`, `ExecutionPolicy`, and `Outcome`. Results carry
@@ -77,7 +85,9 @@ This is the invariant most likely to be broken by a careless change:
 2. `ExecutionPolicy` has three arms with structurally different paths.
    `ReadOnly` runs on a worker thread with a timeout, null stdin, bounded
    stdout/stderr, and a `CancellationToken`. `Detached` spawns a graphical
-   program and does not wait. `Mutating` cannot be started by `actions::start`
+   program and watches it for `actions::START_WATCH` (400 ms) — long enough to
+   catch one that dies at once, and never cancellable, because Escape must not
+   kill what the user just started. `Mutating` cannot be started by `actions::start`
    at all — only `actions::start_confirmed`, reached solely from the frozen
    `pending_confirmation` payload in `ui::Launcher`, and only via Enter. A
    result-row click deliberately cannot confirm a mutation, and a query change
@@ -86,6 +96,11 @@ This is the invariant most likely to be broken by a careless change:
    remove another provider's results or break the launcher shell.
 4. Failures are distinguished, not collapsed: unavailable tool, permission
    denied, timeout, cancellation, non-zero exit, spawn failure.
+5. Scene never reports an outcome it did not observe. `Outcome::Succeeded`
+   means the work was watched and finished; `Outcome::Started` means the
+   program was handed over and is no longer being watched — a desktop launch,
+   or a program still alive when `START_WATCH` elapsed. Do not collapse the
+   two.
 
 ### Adding an integration
 
@@ -126,12 +141,28 @@ reproducibly. Within an item, a title hit outranks a keyword hit (−40) which
 outranks a description hit (−80). `fuzzy` is a subsequence matcher rewarding
 word starts and adjacent runs. Any ranking change needs a fixture-based test.
 
+With no query every item "matches" and the score carries no information, so
+`Kind::resting_limit` trims each group to its top few — `Application` only,
+because it is the one group whose size is discovered rather than chosen. A
+query is never trimmed, so search still reaches everything. `ui` reports a
+trimmed group as `5 of 81` in its heading by counting what it rendered against
+what it was given; it does not know the rule.
+
+`History` adds at most 24 (frequency) + 15 (recency) = 39 to a matched item's
+score. That bound is load-bearing, not arbitrary: it sits below the 40-point
+title/keyword gap, so use can lift a result within its group and can never
+make a keyword match outrank a title match. Group order is untouched because
+the bonus is inside the score, not the priority. State lives in
+`$XDG_STATE_HOME/scene/history`, whose first line names its format version.
+
 ### Outcome rendering
 
 `Outcome` drives four exhaustive `match`es (`message`, `prefix`, `icon`,
-`tone`) plus `should_dismiss`. Adding a variant means updating all of them and
-the `.status.{ok,info,warn,error}` classes in `style.css`;
-`every_outcome_states_itself_in_words` guards the first part.
+`tone`) plus `should_dismiss`. Adding a variant means updating all of them and,
+unless it reuses an existing tone, the `.status.{ok,info,warn,error}` classes
+in `style.css`; `every_outcome_states_itself_in_words` guards the first part.
+A non-dismissing outcome arriving after the launcher has closed re-presents
+the window, so a watched launch that fails is never reported to nobody.
 
 ## Testing
 
@@ -139,8 +170,15 @@ Tests are `#[cfg(test)] mod tests` blocks inside each module and must stay
 hermetic: rank against `search::tests::fixture`, not the machine's installed
 applications, and exercise subprocess behaviour through `system::tests::
 fake_program` (a temporary `#!/bin/sh` script), never the host package
-database. There is no UI test harness yet — GTK/Wayland behaviour is checked
-manually, and the plan requires stating which verification was manual.
+database.
+
+`ui.rs` carries the UI smoke suite: one test, because GTK must be used from
+the thread that initialised it. It drives the whole keyboard contract against
+real widgets, entering keys at `Launcher::key` — the same method the window's
+key controller calls. What it cannot prove is the compositor delivering a
+physical key press to that controller, which stays a manual check. Keep it one
+test function, keep it skipping cleanly without a display, and keep its
+history disabled so it never writes to the user's state file.
 
 ## Platform realities to respect
 

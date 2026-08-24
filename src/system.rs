@@ -221,7 +221,7 @@ fn read_limited(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -261,8 +261,11 @@ mod tests {
         run(spec, cancellation)
     }
 
+    /// A throwaway `#!/bin/sh` program, so subprocess behaviour is exercised
+    /// against something this repository controls rather than against a tool
+    /// that happens to be installed. `actions` uses it too.
     #[cfg(unix)]
-    fn fake_program(body: &str) -> std::path::PathBuf {
+    pub(crate) fn fake_program(body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
 
         let path = std::env::temp_dir().join(format!(

@@ -83,6 +83,13 @@ list.results > row {
   color: rgba(241, 241, 244, 0.56);
 }
 
+.section-count {
+  padding: 12px 14px 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(241, 241, 244, 0.38);
+}
+
 .result {
   margin: 1px 2px;
   padding: 8px 12px;
@@ -240,6 +247,7 @@ list.results > row {
 .contrast .title,
 .contrast .subtitle,
 .contrast .section,
+.contrast .section-count,
 .contrast .tag,
 .contrast .hint,
 .contrast .kbd,

@@ -11,9 +11,9 @@ use gtk::accessible::{Property, State};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib, pango};
 
-use crate::actions::{self, Outcome, RunningAction, StartedAction};
+use crate::actions::{self, Action, Outcome, RunningAction, StartedAction};
 use crate::integrations;
-use crate::search::{self, Item};
+use crate::search::{self, History, Item};
 
 const WIDTH: i32 = 720;
 const MAX_RESULT_HEIGHT: i32 = 392;
@@ -52,10 +52,14 @@ pub struct Launcher {
     hits: RefCell<Vec<usize>>,
     rows: RefCell<Vec<gtk::ListBoxRow>>,
     selected: Cell<usize>,
-    /// The action selected for confirmation is frozen here. Query changes and
-    /// selection movement cannot substitute a different mutation on Enter.
-    pending_confirmation: RefCell<Option<crate::actions::Action>>,
+    /// The action selected for confirmation is frozen here, with the result id
+    /// it came from. Query changes and selection movement cannot substitute a
+    /// different mutation on Enter.
+    pending_confirmation: RefCell<Option<(String, Action)>>,
     running: RefCell<Option<RunningAction>>,
+    /// What the user has chosen before, which adjusts ranking within a group.
+    /// `search` decides how much it counts for; this module only records it.
+    history: RefCell<History>,
 }
 
 impl Launcher {
@@ -185,6 +189,7 @@ impl Launcher {
             selected: Cell::new(0),
             pending_confirmation: RefCell::new(None),
             running: RefCell::new(None),
+            history: RefCell::new(History::load()),
         });
 
         launcher.connect_signals();
@@ -226,20 +231,34 @@ impl Launcher {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, _| {
-            let Some(l) = this.upgrade() else {
-                return glib::Propagation::Proceed;
-            };
-            match key {
-                gdk::Key::Down => l.move_selection(1),
-                gdk::Key::Up => l.move_selection(-1),
-                gdk::Key::Return | gdk::Key::KP_Enter => l.activate_selected(true),
-                gdk::Key::Escape => l.dismiss(),
-                _ => return glib::Propagation::Proceed,
-            }
-            glib::Propagation::Stop
+        keys.connect_key_pressed(move |_, key, _, _| match this.upgrade() {
+            Some(launcher) => launcher.key(key),
+            None => glib::Propagation::Proceed,
         });
         self.window.add_controller(keys);
+    }
+
+    /// The whole keyboard contract, in one place. The controller above only
+    /// delivers the key; everything the launcher does with one is here, which
+    /// is also what the smoke harness drives.
+    fn key(self: &Rc<Self>, key: gdk::Key) -> glib::Propagation {
+        match key {
+            gdk::Key::Down => self.move_selection(1),
+            gdk::Key::Up => self.move_selection(-1),
+            gdk::Key::Return | gdk::Key::KP_Enter => self.activate_selected(true),
+            gdk::Key::Escape => self.dismiss(),
+            _ => return glib::Propagation::Proceed,
+        }
+        glib::Propagation::Stop
+    }
+
+    /// Rank against a stated set of items instead of the machine's own index,
+    /// so the smoke harness drives the real widget tree without depending on
+    /// what happens to be installed.
+    #[cfg(test)]
+    fn replace_items(&self, items: Vec<Item>) {
+        *self.items.borrow_mut() = items;
+        self.refresh();
     }
 
     /// Show the launcher in a known-good state, however many times it is called.
@@ -260,19 +279,25 @@ impl Launcher {
         // One ranked list over both sources, so a query answer is ordered by
         // the same rules as everything else rather than pinned by the UI.
         let visible: Vec<&Item> = answers.iter().chain(items.iter()).collect();
-        let hits = search::search(&query, &visible);
+        let hits = search::search(&query, &visible, &self.history.borrow());
 
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
         let mut rows = Vec::with_capacity(hits.len());
         let mut group = None;
+        // A group is only ever trimmed in the resting state, so that is the
+        // only time a heading has a count to report.
+        let resting = query.trim().is_empty();
 
         for &index in &hits {
             let item = visible[index];
             if group != Some(item.kind) {
                 group = Some(item.kind);
-                self.list.append(&section_row(item.kind.heading()));
+                let trimmed = resting
+                    .then(|| withheld(item.kind, &hits, &visible))
+                    .flatten();
+                self.list.append(&section_row(item.kind, trimmed));
             }
             let row = result_row(item);
             self.list.append(&row);
@@ -349,12 +374,12 @@ impl Launcher {
             // never an unambiguous confirmation for a previously displayed
             // mutation. Only Enter accepts the frozen confirmation payload.
             if confirm_pending {
-                let action = self
+                let (id, action) = self
                     .pending_confirmation
                     .borrow_mut()
                     .take()
                     .expect("checked pending confirmation");
-                self.start_action(&action, true);
+                self.start_action(&id, &action, true);
             }
             return;
         }
@@ -366,36 +391,41 @@ impl Launcher {
             }
         };
 
-        let Some(action) = self.action_at(index) else {
+        let Some((id, action)) = self.chosen(index) else {
             return;
         };
         if actions::requires_confirmation(&action) {
-            let crate::actions::Action::Process { action: process } = &action else {
+            let Action::Process { action: process } = &action else {
                 unreachable!()
             };
             let text = actions::confirmation_text(process);
-            *self.pending_confirmation.borrow_mut() = Some(action);
+            *self.pending_confirmation.borrow_mut() = Some((id, action));
             self.show_status(&Outcome::AwaitingConfirmation(text));
             return;
         }
-        self.start_action(&action, false);
+        self.start_action(&id, &action, false);
     }
 
-    /// Resolve a ranked position back to its item. Answers are ranked ahead
-    /// of the index, so they occupy the first positions of the same list.
-    fn action_at(&self, index: usize) -> Option<crate::actions::Action> {
+    /// Resolve a ranked position back to its item's id and action. Answers are
+    /// ranked ahead of the index, so they occupy the first positions of the
+    /// same list.
+    fn chosen(&self, index: usize) -> Option<(String, Action)> {
         let answers = self.answers.borrow();
         if let Some(item) = answers.get(index) {
-            return Some(item.action.clone());
+            return Some((item.id.clone(), item.action.clone()));
         }
         let index = index - answers.len();
         self.items
             .borrow()
             .get(index)
-            .map(|item| item.action.clone())
+            .map(|item| (item.id.clone(), item.action.clone()))
     }
 
-    fn start_action(self: &Rc<Self>, action: &crate::actions::Action, confirmed: bool) {
+    fn start_action(self: &Rc<Self>, id: &str, action: &Action, confirmed: bool) {
+        // Recorded when the action actually starts, so a confirmation the user
+        // backed out of is not counted as a use.
+        self.history.borrow_mut().record(id);
+
         let started = if confirmed {
             actions::start_confirmed(action)
         } else {
@@ -404,13 +434,17 @@ impl Launcher {
         match started {
             StartedAction::Running(running) => {
                 let title = match action {
-                    crate::actions::Action::Process { action } => action.title.clone(),
+                    Action::Process { action } => action.title.clone(),
+                    Action::Open { target } => format!("Opening {target}"),
                     _ => "Action".into(),
                 };
+                let waiting = if running.is_cancellable() {
+                    format!("{title} is running. Press Escape to cancel.")
+                } else {
+                    format!("{title}…")
+                };
                 *self.running.borrow_mut() = Some(running);
-                self.show_status(&Outcome::Pending(format!(
-                    "{title} is running. Press Escape to cancel."
-                )));
+                self.show_status(&Outcome::Pending(waiting));
                 self.watch_running();
             }
             StartedAction::Immediate(outcome) => self.finish_outcome(outcome),
@@ -446,14 +480,30 @@ impl Launcher {
         } else if outcome.should_dismiss() {
             self.window.set_visible(false);
         } else {
+            // A watched launch reports after the launcher has already closed.
+            // Something that failed has to be visible, so the window comes
+            // back with the query intact rather than being reset.
+            if !self.window.is_visible() {
+                self.window.present();
+                self.entry.grab_focus();
+            }
             self.show_status(&outcome);
         }
     }
 
     /// Escape cancels the query first, and only then closes the launcher.
     fn dismiss(&self) {
-        if let Some(running) = self.running.borrow().as_ref() {
-            running.cancel();
+        // A watched launch is not cancellable, so Escape falls through to
+        // closing the launcher rather than killing what the user just started.
+        let cancelling = self
+            .running
+            .borrow()
+            .as_ref()
+            .is_some_and(RunningAction::is_cancellable);
+        if cancelling {
+            if let Some(running) = self.running.borrow().as_ref() {
+                running.cancel();
+            }
             self.show_status(&Outcome::Pending("Cancelling action…".into()));
             return;
         }
@@ -521,7 +571,20 @@ fn kbd(text: &str) -> gtk::Label {
     label
 }
 
-fn section_row(heading: &str) -> gtk::ListBoxRow {
+/// How much of one group the list is showing, when it is not showing all of
+/// it. This counts what was rendered against what was there; the rule that
+/// decided it lives in `search`.
+fn withheld(kind: search::Kind, hits: &[usize], visible: &[&Item]) -> Option<(usize, usize)> {
+    let shown = hits
+        .iter()
+        .filter(|&&index| visible[index].kind == kind)
+        .count();
+    let total = visible.iter().filter(|item| item.kind == kind).count();
+    (total > shown).then_some((shown, total))
+}
+
+fn section_row(kind: search::Kind, trimmed: Option<(usize, usize)>) -> gtk::ListBoxRow {
+    let heading = kind.heading();
     let label = gtk::Label::new(Some(heading));
     label.set_xalign(0.0);
     label.add_css_class("section");
@@ -531,13 +594,30 @@ fn section_row(heading: &str) -> gtk::ListBoxRow {
     attributes.insert(pango::AttrInt::new_letter_spacing(pango::SCALE));
     label.set_attributes(Some(&attributes));
 
+    let content = row_box(0);
+    content.append(&label);
+
+    // A trimmed group says so. Five of eighty-one under a heading that reads
+    // "APPLICATIONS" would otherwise claim the machine has five.
+    let described = match trimmed {
+        Some((shown, total)) => {
+            let count = gtk::Label::new(Some(&format!("{shown} of {total}")));
+            count.add_css_class("section-count");
+            count.set_hexpand(true);
+            count.set_halign(gtk::Align::End);
+            content.append(&count);
+            format!("{heading}, showing {shown} of {total}. Type to search all of them.")
+        }
+        None => heading.to_string(),
+    };
+
     let row = gtk::ListBoxRow::builder()
-        .child(&label)
+        .child(&content)
         .selectable(false)
         .activatable(false)
         .focusable(false)
         .build();
-    row.update_property(&[Property::Label(heading)]);
+    row.update_property(&[Property::Label(described.as_str())]);
     row
 }
 
@@ -615,4 +695,302 @@ fn is_available(icon: &gio::Icon) -> bool {
     gdk::Display::default()
         .map(|display| gtk::IconTheme::for_display(&display))
         .is_some_and(|theme| themed.names().iter().any(|name| theme.has_icon(name)))
+}
+
+/// The UI smoke suite: the keyboard-only path, driven end to end against the
+/// real widget tree.
+///
+/// A Wayland client cannot inject its own input events and this session has no
+/// injection tool, so the keys enter at [`Launcher::key`] — the same method the
+/// window's key controller calls, with the same launcher state behind it. What
+/// this does *not* prove is the compositor delivering a physical key press to
+/// that controller; that stays a manual check, recorded in `PRODUCT_PLAN.md`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::{Confirmation, ProcessAction};
+    use crate::search::Kind;
+    use crate::system::CommandSpec;
+
+    /// Nothing to run, so confirming a mutation in the harness reports an
+    /// unavailable tool rather than changing anything.
+    const MISSING: &str = "scene-no-such-binary-for-tests";
+
+    fn item(id: &str, title: &str, keyword: &str, action: Action) -> Item {
+        Item {
+            id: id.into(),
+            title: title.into(),
+            subtitle: "for the smoke harness".into(),
+            kind: Kind::Scene,
+            icon: None,
+            category: None,
+            keywords: vec![keyword.into()],
+            action,
+        }
+    }
+
+    fn mutation() -> Item {
+        item(
+            "smoke.mutation",
+            "Mutate Something",
+            "mutate",
+            Action::Process {
+                action: ProcessAction::mutating(
+                    "smoke.mutation",
+                    "Mutate Something",
+                    CommandSpec::read_only(MISSING, [] as [&str; 0]),
+                    Confirmation {
+                        summary: "This would change the system.".into(),
+                        target: MISSING.into(),
+                    },
+                ),
+            },
+        )
+    }
+
+    fn slow(program: &str) -> Item {
+        item(
+            "smoke.slow",
+            "Wait For Something",
+            "waiting",
+            Action::Process {
+                action: ProcessAction::read_only(
+                    "smoke.slow",
+                    "Wait For Something",
+                    CommandSpec::read_only(program, [] as [&str; 0])
+                        .with_timeout(Duration::from_secs(30)),
+                ),
+            },
+        )
+    }
+
+    /// Give the main loop a turn, the way a running launcher gets one between
+    /// two key presses.
+    fn pump(context: &glib::MainContext) {
+        for _ in 0..8 {
+            context.iteration(false);
+        }
+    }
+
+    /// Run the main loop until the action in flight reports, which is what the
+    /// launcher's own `glib::timeout` does when GTK is driving.
+    fn settle(launcher: &Rc<Launcher>, context: &glib::MainContext) {
+        for _ in 0..600 {
+            if launcher.running.borrow().is_none() {
+                return;
+            }
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the action never reported an outcome");
+    }
+
+    fn status(launcher: &Launcher) -> String {
+        launcher.status_label.text().to_string()
+    }
+
+    fn selected_row_is_marked(launcher: &Launcher) -> bool {
+        let rows = launcher.rows.borrow();
+        rows.iter().enumerate().all(|(position, row)| {
+            row.has_css_class("selected") == (position == launcher.selected.get())
+        })
+    }
+
+    /// One test function on purpose: GTK has to be used from the thread that
+    /// initialised it, and the test harness gives every test its own thread.
+    #[test]
+    fn the_keyboard_only_path_runs_end_to_end() {
+        if gtk::init().is_err() {
+            eprintln!("skipping the UI smoke suite: no display to open");
+            return;
+        }
+        let context = glib::MainContext::default();
+        let _owner = context
+            .acquire()
+            .expect("the test thread owns the default main context");
+
+        load_styles();
+        let app = gtk::Application::builder()
+            .application_id("dev.scene.SceneSmoke")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gio::Cancellable::NONE)
+            .expect("register the harness application");
+
+        let program = crate::system::tests::fake_program("sleep 30");
+        let mut items = crate::search::tests::fixture();
+        items.push(mutation());
+        items.push(slow(&program.to_string_lossy()));
+        // Enough applications to pass the resting limit, so the harness covers
+        // the trimmed list and its heading as well as the full one.
+        for index in 0..8 {
+            let mut discovered = item(
+                &format!("app{index}.desktop"),
+                &format!("Zebra {index}"),
+                "zebra",
+                Action::Message {
+                    text: "zebra".into(),
+                },
+            );
+            discovered.kind = Kind::Application;
+            items.push(discovered);
+        }
+        let applications = items
+            .iter()
+            .filter(|item| item.kind == Kind::Application)
+            .count();
+        let hidden = applications - Kind::Application.resting_limit_for_tests();
+        let count = items.len();
+        let resting = count - hidden;
+
+        let launcher = Launcher::build(&app);
+        // The harness must never write to the user's own history file, and a
+        // stated ranking is what makes the positions below meaningful.
+        *launcher.history.borrow_mut() = History::disabled();
+        launcher.replace_items(items);
+
+        // Activation: a focused search field and the whole index.
+        launcher.present();
+        pump(&context);
+        assert!(launcher.window.is_visible(), "the launcher did not appear");
+        // A GtkEntry delegates its caret to an internal GtkText, so the focus
+        // lands inside the search field rather than on it.
+        let focused = gtk::prelude::GtkWindowExt::focus(&launcher.window)
+            .expect("something in the launcher holds the focus");
+        assert!(
+            focused.is_ancestor(&launcher.entry)
+                || focused == launcher.entry.clone().upcast::<gtk::Widget>(),
+            "the search field is not focused"
+        );
+        assert!(launcher.entry.text().is_empty());
+        // The resting list is trimmed, and the heading says so rather than
+        // implying the machine has five applications.
+        assert_eq!(launcher.rows.borrow().len(), resting);
+        assert!(hidden > 0, "the harness must exercise a trimmed group");
+        assert!(!launcher.status.is_visible());
+
+        // Typing still reaches every one of them.
+        launcher.entry.set_text("zebra");
+        assert_eq!(launcher.rows.borrow().len(), 8, "a query was trimmed");
+        launcher.entry.set_text("");
+        assert_eq!(launcher.rows.borrow().len(), resting);
+
+        // Typing narrows the list and selects the best result.
+        launcher.entry.set_text("system");
+        let narrowed = launcher.rows.borrow().len();
+        assert!(narrowed > 1 && narrowed < count, "{narrowed} of {count}");
+        assert_eq!(launcher.selected.get(), 0);
+        assert!(selected_row_is_marked(&launcher));
+
+        // Down and Up move the selection, and wrap at either end.
+        launcher.key(gdk::Key::Down);
+        assert_eq!(launcher.selected.get(), 1);
+        assert!(selected_row_is_marked(&launcher));
+        launcher.key(gdk::Key::Up);
+        assert_eq!(launcher.selected.get(), 0);
+        launcher.key(gdk::Key::Up);
+        assert_eq!(launcher.selected.get(), narrowed - 1, "Up did not wrap");
+        launcher.key(gdk::Key::Down);
+        assert_eq!(launcher.selected.get(), 0, "Down did not wrap");
+
+        // A query with no results says so, and Enter on nothing does nothing.
+        launcher.entry.set_text("zzzqqq");
+        assert!(launcher.rows.borrow().is_empty());
+        assert!(launcher.empty.is_visible());
+        assert!(!launcher.scroller.is_visible());
+        launcher.key(gdk::Key::Return);
+        assert!(launcher.window.is_visible());
+        assert!(!launcher.status.is_visible());
+
+        // Enter runs the selected result and reports it in the footer.
+        launcher.entry.set_text("about");
+        launcher.key(gdk::Key::Return);
+        assert!(launcher.status.is_visible());
+        assert!(
+            status(&launcher).starts_with("Scene — "),
+            "{}",
+            status(&launcher)
+        );
+        assert!(
+            launcher.window.is_visible(),
+            "a report must not close the launcher"
+        );
+
+        // Escape clears the query first, and only then closes.
+        launcher.key(gdk::Key::Escape);
+        assert!(launcher.entry.text().is_empty());
+        assert!(launcher.window.is_visible());
+        launcher.key(gdk::Key::Escape);
+        assert!(
+            !launcher.window.is_visible(),
+            "Escape did not close the launcher"
+        );
+
+        // Re-activation resets the query, the status and the selection.
+        launcher.entry.set_text("system");
+        launcher.key(gdk::Key::Down);
+        launcher.present();
+        assert!(launcher.entry.text().is_empty());
+        assert!(!launcher.status.is_visible());
+        assert_eq!(launcher.selected.get(), 0);
+        assert_eq!(launcher.rows.borrow().len(), resting);
+
+        // A mutation asks first, and only Enter answers.
+        launcher.entry.set_text("mutate");
+        launcher.key(gdk::Key::Return);
+        assert!(launcher.pending_confirmation.borrow().is_some());
+        assert!(
+            status(&launcher).starts_with("Confirm — "),
+            "{}",
+            status(&launcher)
+        );
+        assert!(launcher.running.borrow().is_none(), "nothing may run yet");
+
+        launcher.activate_selected(false);
+        assert!(
+            launcher.pending_confirmation.borrow().is_some(),
+            "a result-row click confirmed a mutation"
+        );
+        assert!(launcher.running.borrow().is_none());
+
+        launcher.key(gdk::Key::Escape);
+        assert!(launcher.pending_confirmation.borrow().is_none());
+        assert!(!launcher.status.is_visible());
+        assert!(launcher.window.is_visible());
+
+        launcher.key(gdk::Key::Return);
+        assert!(launcher.pending_confirmation.borrow().is_some());
+        launcher.key(gdk::Key::Return);
+        settle(&launcher, &context);
+        assert!(
+            status(&launcher).starts_with("Unavailable — "),
+            "{}",
+            status(&launcher)
+        );
+        assert!(launcher.window.is_visible());
+
+        // A long action is cancellable from the keyboard.
+        launcher.entry.set_text("waiting");
+        launcher.key(gdk::Key::Return);
+        assert!(launcher.running.borrow().is_some());
+        assert!(
+            status(&launcher).starts_with("Working — "),
+            "{}",
+            status(&launcher)
+        );
+        launcher.key(gdk::Key::Escape);
+        assert!(
+            launcher.window.is_visible(),
+            "Escape cancelled and closed at once"
+        );
+        settle(&launcher, &context);
+        assert!(
+            status(&launcher).starts_with("Cancelled — "),
+            "{}",
+            status(&launcher)
+        );
+
+        std::fs::remove_file(program).expect("remove fake executable");
+        launcher.window.set_visible(false);
+    }
 }

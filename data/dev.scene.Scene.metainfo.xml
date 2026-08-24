@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The AppStream metadata Fedora's packaging guidelines ask a GUI
+     application to install into %{_metainfodir}. Its name must share the root
+     of the desktop entry beside it. -->
+<component type="desktop-application">
+  <id>dev.scene.Scene</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Scene</name>
+  <summary>Fast, keyboard-first Linux launcher</summary>
+
+  <description>
+    <p>
+      Scene is a keyboard-first launcher for Linux. Activate it, type, and it
+      ranks installed applications, folders, links, and its own commands in one
+      deterministic list.
+    </p>
+    <p>
+      System actions are typed and bounded rather than free-form shell
+      commands. Every command Scene will run is shown before it runs, work that
+      changes the system is confirmed first and escalates through the desktop's
+      own authorisation agent, and the launcher reports what it actually
+      observed: an unavailable tool, a permission failure, a timeout, a
+      cancellation, or a non-zero exit.
+    </p>
+    <p>
+      Package search, metadata, installed-package and update queries work
+      through capability adapters for the Debian, Fedora and Arch families,
+      detected by the tools that are really on PATH.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">dev.scene.Scene.desktop</launchable>
+  <provides>
+    <binary>scene</binary>
+  </provides>
+
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>launcher</keyword>
+    <keyword>search</keyword>
+    <keyword>run</keyword>
+    <keyword>command</keyword>
+  </keywords>
+
+  <developer id="dev.scene">
+    <name>Scene contributors</name>
+  </developer>
+  <url type="homepage">https://github.com/fullstacktaiye/Scene</url>
+  <url type="bugtracker">https://github.com/fullstacktaiye/Scene/issues</url>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-08-24" type="development">
+      <description>
+        <p>Pre-release development builds. Not yet packaged for a distribution.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,10 +1,14 @@
 //! Query matching and ranking over an in-memory result set.
 //!
-//! Ranking is deterministic: the same query against the same index always
-//! produces the same order. Providers hand this module typed items; it never
-//! executes anything and never touches the UI.
+//! Ranking is deterministic: the same query, against the same items, with the
+//! same [`History`], always produces the same order. Those three are the only
+//! inputs. Providers hand this module typed items; it never executes anything
+//! and never touches the UI.
 
 use std::borrow::Borrow;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gtk::gio;
 use gtk::prelude::*;
@@ -66,6 +70,27 @@ impl Kind {
         }
     }
 
+    /// How many of this group to show when there is no query.
+    ///
+    /// Applications are the one group whose size is not Scene's to choose:
+    /// they come from discovery, and there are 81 of them on the development
+    /// machine. Filling the launcher with all of them before the user has
+    /// typed anything buries the groups underneath and says nothing useful.
+    /// Every other group is a small fixed catalogue Scene itself owns, so it
+    /// shows in full. Typing searches all of them either way.
+    /// The same limit, reachable from `ui`'s smoke harness.
+    #[cfg(test)]
+    pub(crate) fn resting_limit_for_tests(self) -> usize {
+        self.resting_limit().unwrap_or(usize::MAX)
+    }
+
+    fn resting_limit(self) -> Option<usize> {
+        match self {
+            Kind::Application => Some(5),
+            Kind::Package | Kind::Folder | Kind::Web | Kind::Scene => None,
+        }
+    }
+
     pub fn fallback_icon(self) -> &'static str {
         match self {
             Kind::Package => "package-x-generic-symbolic",
@@ -114,7 +139,10 @@ pub fn index() -> Vec<Item> {
 ///
 /// It takes anything that borrows an `Item`, so the caller can rank one owned
 /// index and a set of query answers together without copying either.
-pub fn search<I: Borrow<Item>>(query: &str, items: &[I]) -> Vec<usize> {
+///
+/// `history` adjusts the order within a group and can never reorder the groups
+/// themselves. Pass [`History::disabled`] for the deterministic baseline alone.
+pub fn search<I: Borrow<Item>>(query: &str, items: &[I], history: &History) -> Vec<usize> {
     let needle = query.trim().to_lowercase();
 
     let mut hits: Vec<(u8, i32, usize)> = items
@@ -127,13 +155,46 @@ pub fn search<I: Borrow<Item>>(query: &str, items: &[I]) -> Vec<usize> {
             } else {
                 score(&needle, item)?
             };
-            Some((item.kind.priority(), -score, i))
+            Some((item.kind.priority(), -(score + history.bonus(&item.id)), i))
         })
         .collect();
 
     // Group, then best score, then the order the provider listed them in.
     hits.sort_unstable();
+    if needle.is_empty() {
+        hits = resting(hits, items);
+    }
     hits.into_iter().map(|(_, _, i)| i).collect()
+}
+
+/// Trim each group to its [`Kind::resting_limit`].
+///
+/// This applies only with no query, where every item "matches" and the score
+/// carries no information: what leads a group there is what the user has
+/// actually used. A query ranks against something, so it is never trimmed —
+/// searching still reaches every result.
+fn resting<I: Borrow<Item>>(hits: Vec<(u8, i32, usize)>, items: &[I]) -> Vec<(u8, i32, usize)> {
+    let mut kept = Vec::with_capacity(hits.len());
+    let mut group = None;
+    let mut taken = 0;
+
+    // The hits are already grouped, because priority sorts first.
+    for hit in hits {
+        if group != Some(hit.0) {
+            group = Some(hit.0);
+            taken = 0;
+        }
+        taken += 1;
+        if items[hit.2]
+            .borrow()
+            .kind
+            .resting_limit()
+            .is_none_or(|limit| taken <= limit)
+        {
+            kept.push(hit);
+        }
+    }
+    kept
 }
 
 /// Best score across an item's searchable text, or `None` if nothing matches.
@@ -180,6 +241,218 @@ fn fuzzy(needle: &str, haystack: &str) -> Option<i32> {
 
     // Prefer the shorter of two otherwise equal matches.
     Some(score - hay.len() as i32 / 8)
+}
+
+/// The recent and frequent adjustment to the deterministic baseline.
+///
+/// This is the one part of ranking that depends on what the user has done
+/// before, so it is an explicit argument to [`search`] rather than ambient
+/// state: the same query, items and history always produce the same order.
+///
+/// The adjustment is bounded on purpose. The largest bonus any item can carry
+/// is [`MAX_FREQUENCY_BONUS`] + [`MAX_RECENCY_BONUS`] = 39, which stays below
+/// the 40-point gap [`score`] puts between a title hit and a keyword hit. Use
+/// can therefore lift a result within its group; it can never make a keyword
+/// match outrank a title match, and it never crosses a group boundary.
+#[derive(Debug, Default)]
+pub struct History {
+    enabled: bool,
+    /// Where the history is persisted, when it is. `None` while disabled and
+    /// in tests, which never touch the user's state directory.
+    path: Option<PathBuf>,
+    /// Captured when the history is loaded and moved only by [`record`], so
+    /// the order does not drift under the user while they are typing.
+    ///
+    /// [`record`]: History::record
+    now: u64,
+    entries: BTreeMap<String, Use>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Use {
+    count: u32,
+    /// Seconds since the Unix epoch.
+    last: u64,
+}
+
+/// The first line of the state file. A file that does not start with exactly
+/// this is a history Scene cannot read, which is no history rather than an
+/// error — and it is where a later format change announces itself.
+const HISTORY_FORMAT: &str = "scene-history 1";
+/// Enough to cover what one person actually launches, and bounded so the file
+/// cannot grow without limit.
+const HISTORY_LIMIT: usize = 512;
+const MAX_FREQUENCY_BONUS: i32 = 24;
+const MAX_RECENCY_BONUS: i32 = 15;
+
+impl History {
+    /// The deterministic baseline with no adjustment at all. Ranking tests use
+    /// it, and so does a session where the user turned history off.
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+
+    /// The user's history, or a disabled one when it is switched off or cannot
+    /// be read. A history that fails to load is never an error the user has to
+    /// deal with: the launcher ranks on the baseline and starts recording
+    /// again.
+    pub fn load() -> Self {
+        if !enabled_by_environment() {
+            return Self::disabled();
+        }
+        let path = state_path();
+        let text = path
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        let mut history = Self::parse(&text, seconds_since_epoch());
+        history.path = path;
+        history
+    }
+
+    /// Note that a result was chosen, and persist it.
+    pub fn record(&mut self, id: &str) {
+        if !self.enabled || id.is_empty() {
+            return;
+        }
+        self.now = seconds_since_epoch();
+        let used = self.entries.entry(id.to_string()).or_default();
+        used.count = used.count.saturating_add(1);
+        used.last = self.now;
+        self.forget_oldest();
+        self.save();
+    }
+
+    /// The bonus for one item, which is zero for anything never chosen.
+    fn bonus(&self, id: &str) -> i32 {
+        if !self.enabled {
+            return 0;
+        }
+        let Some(used) = self.entries.get(id) else {
+            return 0;
+        };
+        frequency_bonus(used.count) + self.recency_bonus(used.last)
+    }
+
+    /// Recency is bucketed rather than continuous, so two results used in the
+    /// same session rank by how often they were used rather than by seconds.
+    fn recency_bonus(&self, last: u64) -> i32 {
+        const HOUR: u64 = 60 * 60;
+        const DAY: u64 = 24 * HOUR;
+        match self.now.saturating_sub(last) {
+            age if age < HOUR => MAX_RECENCY_BONUS,
+            age if age < DAY => 10,
+            age if age < 7 * DAY => 5,
+            age if age < 30 * DAY => 2,
+            _ => 0,
+        }
+    }
+
+    fn forget_oldest(&mut self) {
+        while self.entries.len() > HISTORY_LIMIT {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(id, used)| (used.last, (*id).clone()))
+                .map(|(id, _)| id.clone())
+            else {
+                return;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
+
+    fn parse(text: &str, now: u64) -> Self {
+        let mut history = Self {
+            enabled: true,
+            path: None,
+            now,
+            entries: BTreeMap::new(),
+        };
+        let mut lines = text.lines();
+        if lines.next().map(str::trim) != Some(HISTORY_FORMAT) {
+            return history;
+        }
+        for line in lines {
+            let mut fields = line.trim().splitn(3, ' ');
+            let (Some(count), Some(last), Some(id)) = (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            let (Ok(count), Ok(last)) = (count.parse::<u32>(), last.parse::<u64>()) else {
+                continue;
+            };
+            if !id.is_empty() {
+                history.entries.insert(id.to_string(), Use { count, last });
+            }
+        }
+        history
+    }
+
+    fn render(&self) -> String {
+        let mut text = String::from(HISTORY_FORMAT);
+        text.push('\n');
+        for (id, used) in &self.entries {
+            text.push_str(&format!("{} {} {id}\n", used.count, used.last));
+        }
+        text
+    }
+
+    /// Best effort. A state directory that cannot be written costs the user a
+    /// better order next time, and nothing else.
+    fn save(&self) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        if let Some(directory) = path.parent() {
+            let _ = std::fs::create_dir_all(directory);
+        }
+        let _ = std::fs::write(path, self.render());
+    }
+}
+
+fn frequency_bonus(count: u32) -> i32 {
+    const STEPS: i32 = 8;
+    (count.min(STEPS as u32) as i32) * (MAX_FREQUENCY_BONUS / STEPS)
+}
+
+/// `SCENE_HISTORY=off` turns the adjustment off entirely, which is the
+/// "can be disabled" the ranking rules require. Milestone 6 gives it a
+/// settings surface; until then it is one environment variable, like
+/// `SCENE_DIRECTORY`.
+fn enabled_by_environment() -> bool {
+    enabled_by(std::env::var("SCENE_HISTORY").ok().as_deref())
+}
+
+/// The decision on its own, so it can be tested without touching the process
+/// environment other tests are reading at the same time.
+fn enabled_by(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => !matches!(
+            value.trim().to_lowercase().as_str(),
+            "off" | "0" | "no" | "false"
+        ),
+        None => true,
+    }
+}
+
+/// `$XDG_STATE_HOME/scene/history`, which is where state that survives a
+/// restart but is not configuration belongs.
+fn state_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("state"))
+        })?;
+    Some(base.join("scene").join("history"))
+}
+
+fn seconds_since_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or_default()
 }
 
 pub fn themed(name: &str) -> Option<gio::Icon> {
@@ -257,9 +530,24 @@ pub fn catalogue() -> Vec<Item> {
                 text: concat!(
                     "Scene ",
                     env!("CARGO_PKG_VERSION"),
-                    " — Milestone 4. Distro package adapters are ready."
+                    " — Milestone 4.5. Package adapters, watched launches, and recent-result ranking."
                 )
                 .into(),
+            },
+        },
+        Item {
+            id: "scene.reporting".to_string(),
+            title: "What Scene Reports".into(),
+            subtitle: "Which outcomes Scene actually watched".into(),
+            kind: Kind::Scene,
+            icon: themed("dialog-information"),
+            category: None,
+            keywords: words(&["launch", "failure", "outcome", "exit", "watch", "limits"]),
+            action: Action::Message {
+                text: format!(
+                    "Scene watches a program it starts for {:.1} seconds and reports the exit status if it fails in that window. An installed application is handed to the desktop with its activation token: Scene has no handle on it after that, so it reports that it started rather than that it succeeded, and a failure later is not observed. Recent and frequent results rank higher; set SCENE_HISTORY=off to turn that off.",
+                    crate::actions::START_WATCH.as_secs_f32()
+                ),
             },
         },
         Item {
@@ -288,12 +576,13 @@ pub fn catalogue() -> Vec<Item> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A fixed set of items, so ranking tests do not depend on the machine's
-    /// installed applications or on the catalogue's current contents.
-    fn fixture() -> Vec<Item> {
+    /// installed applications or on the catalogue's current contents. The UI
+    /// smoke harness drives the launcher against it for the same reason.
+    pub(crate) fn fixture() -> Vec<Item> {
         let item = |id: &str, title: &str, subtitle: &str, kind, keywords: &[&str]| Item {
             id: id.to_string(),
             title: title.to_string(),
@@ -355,7 +644,7 @@ mod tests {
     }
 
     fn titles(query: &str, items: &[Item]) -> Vec<String> {
-        search(query, items)
+        search(query, items, &History::disabled())
             .into_iter()
             .map(|i| items[i].title.clone())
             .collect()
@@ -364,7 +653,7 @@ mod tests {
     #[test]
     fn empty_query_returns_everything_grouped_by_kind() {
         let items = fixture();
-        let hits = search("", &items);
+        let hits = search("", &items, &History::disabled());
         assert_eq!(hits.len(), items.len());
 
         let priorities: Vec<u8> = hits.iter().map(|&i| items[i].kind.priority()).collect();
@@ -385,7 +674,7 @@ mod tests {
 
     #[test]
     fn non_matching_query_returns_nothing() {
-        assert!(search("zzzqqq", &fixture()).is_empty());
+        assert!(search("zzzqqq", &fixture(), &History::disabled()).is_empty());
     }
 
     #[test]
@@ -452,7 +741,7 @@ mod tests {
         // The same shape the launcher ranks: answers first, then the index.
         let answers = [answer];
         let visible: Vec<&Item> = answers.iter().chain(items.iter()).collect();
-        let hits = search("install firefox", &visible);
+        let hits = search("install firefox", &visible, &History::disabled());
 
         assert_eq!(
             visible[hits[0]].title, "Install “firefox”",
@@ -462,7 +751,7 @@ mod tests {
         // With no package query, the index ranks exactly as it did before.
         let plain: Vec<&Item> = items.iter().collect();
         assert_eq!(
-            search("fire", &plain)
+            search("fire", &plain, &History::disabled())
                 .into_iter()
                 .map(|i| plain[i].title.clone())
                 .collect::<Vec<_>>(),
@@ -473,7 +762,10 @@ mod tests {
     #[test]
     fn ranking_is_stable_across_runs() {
         let items = fixture();
-        assert_eq!(search("do", &items), search("do", &items));
+        assert_eq!(
+            search("do", &items, &History::disabled()),
+            search("do", &items, &History::disabled())
+        );
     }
 
     #[test]
@@ -490,5 +782,293 @@ mod tests {
     #[test]
     fn word_starts_beat_mid_word_matches() {
         assert!(fuzzy("m", "a monitor").unwrap() > fuzzy("m", "amonitor").unwrap());
+    }
+
+    /// A history with a stated clock and stated contents. It has no path, so
+    /// no test can reach the user's own state file.
+    fn history(now: u64, used: &[(&str, u32, u64)]) -> History {
+        History {
+            enabled: true,
+            path: None,
+            now,
+            entries: used
+                .iter()
+                .map(|(id, count, last)| {
+                    (
+                        (*id).to_string(),
+                        Use {
+                            count: *count,
+                            last: *last,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    const NOW: u64 = 1_700_000_000;
+    const HOUR: u64 = 60 * 60;
+    const DAY: u64 = 24 * HOUR;
+
+    /// The fixture plus enough applications to pass the resting limit.
+    fn crowded() -> Vec<Item> {
+        let mut items = fixture();
+        for index in 0..10 {
+            items.push(Item {
+                id: format!("app{index}.desktop"),
+                title: format!("Zebra {index}"),
+                subtitle: "A discovered application".into(),
+                kind: Kind::Application,
+                icon: None,
+                category: None,
+                keywords: words(&["zebra"]),
+                action: Action::Message {
+                    text: "zebra".to_string(),
+                },
+            });
+        }
+        items
+    }
+
+    #[test]
+    fn the_resting_list_shows_only_the_top_applications() {
+        let items = crowded();
+        let applications = items
+            .iter()
+            .filter(|item| item.kind == Kind::Application)
+            .count();
+        let limit = Kind::Application
+            .resting_limit()
+            .expect("applications are trimmed at rest");
+        assert!(applications > limit, "the fixture must exceed the limit");
+
+        let resting = search("", &items, &History::disabled());
+        let shown = resting
+            .iter()
+            .filter(|&&i| items[i].kind == Kind::Application)
+            .count();
+        assert_eq!(shown, limit);
+
+        // Every other group is Scene's own catalogue, and shows in full.
+        for kind in [Kind::Folder, Kind::Web, Kind::Scene] {
+            let all = items.iter().filter(|item| item.kind == kind).count();
+            let shown = resting.iter().filter(|&&i| items[i].kind == kind).count();
+            assert_eq!(shown, all, "{kind:?} was trimmed");
+        }
+    }
+
+    #[test]
+    fn a_query_still_reaches_every_application() {
+        // The trim is the resting state only. Searching must never hide a
+        // result the user asked for by name.
+        let items = crowded();
+        let zebras = search("zebra", &items, &History::disabled());
+        assert_eq!(zebras.len(), 10, "a query was trimmed");
+        assert!(!search("Zebra 9", &items, &History::disabled()).is_empty());
+    }
+
+    #[test]
+    fn use_decides_which_applications_rest_at_the_top() {
+        let items = crowded();
+        // The last one alphabetically, which nothing else would surface.
+        let used = history(NOW, &[("app9.desktop", 5, NOW - HOUR / 2)]);
+        let resting: Vec<String> = search("", &items, &used)
+            .into_iter()
+            .map(|i| items[i].title.clone())
+            .collect();
+        assert!(
+            resting.contains(&"Zebra 9".to_string()),
+            "a used application should rest in the visible five: {resting:?}"
+        );
+    }
+
+    #[test]
+    fn a_used_result_rises_within_its_group() {
+        let items = fixture();
+        // "System Settings" wins "system" on the baseline: it is the shorter
+        // title and the match starts the word in both.
+        assert_eq!(
+            titles("system", &items).first().map(String::as_str),
+            Some("System Settings")
+        );
+
+        let used = history(NOW, &[("monitor.desktop", 6, NOW - HOUR / 2)]);
+        let ranked: Vec<String> = search("system", &items, &used)
+            .into_iter()
+            .map(|i| items[i].title.clone())
+            .collect();
+        assert_eq!(ranked.first().map(String::as_str), Some("System Monitor"));
+    }
+
+    #[test]
+    fn history_never_reorders_the_groups() {
+        let items = fixture();
+        // Heavy use of a Scene command must not lift it above an application.
+        let used = history(NOW, &[("scene.about", 99, NOW)]);
+        let priorities: Vec<u8> = search("", &items, &used)
+            .into_iter()
+            .map(|i| items[i].kind.priority())
+            .collect();
+        assert!(
+            priorities.windows(2).all(|w| w[0] <= w[1]),
+            "history crossed a group boundary: {priorities:?}"
+        );
+    }
+
+    #[test]
+    fn history_cannot_lift_a_keyword_match_over_a_title_match() {
+        // The bound that makes history an adjustment rather than a rewrite:
+        // the largest possible bonus stays under the 40-point field penalty.
+        assert!(frequency_bonus(u32::MAX) + MAX_RECENCY_BONUS < 40);
+
+        let items = fixture();
+        let used = history(NOW, &[("konsole.desktop", u32::MAX, NOW)]);
+        // "settings" is System Settings' title and nothing else's keyword, so
+        // no amount of use may displace it.
+        assert_eq!(
+            search("settings", &items, &used)
+                .into_iter()
+                .map(|i| items[i].title.clone())
+                .next(),
+            Some("System Settings".to_string())
+        );
+    }
+
+    #[test]
+    fn an_older_use_counts_for_less_than_a_recent_one() {
+        let recent = history(NOW, &[("dir.home", 1, NOW - HOUR / 2)]);
+        let older = history(NOW, &[("dir.home", 1, NOW - 10 * DAY)]);
+        let ancient = history(NOW, &[("dir.home", 1, NOW - 400 * DAY)]);
+        assert!(recent.bonus("dir.home") > older.bonus("dir.home"));
+        assert!(older.bonus("dir.home") > ancient.bonus("dir.home"));
+        assert_eq!(recent.bonus("never.chosen"), 0);
+    }
+
+    #[test]
+    fn a_disabled_history_scores_nothing_and_records_nothing() {
+        let mut disabled = History::disabled();
+        disabled.record("dir.home");
+        assert_eq!(disabled.bonus("dir.home"), 0);
+
+        let items = fixture();
+        assert_eq!(
+            search("system", &items, &disabled),
+            search("system", &items, &History::disabled())
+        );
+    }
+
+    #[test]
+    fn ranking_with_a_history_is_still_stable_across_runs() {
+        let items = fixture();
+        let used = history(
+            NOW,
+            &[("monitor.desktop", 3, NOW - DAY), ("dir.home", 9, NOW)],
+        );
+        assert_eq!(
+            search("o", &items, &used),
+            search("o", &items, &used),
+            "the same query, items and history must give the same order"
+        );
+    }
+
+    #[test]
+    fn a_history_survives_being_written_and_read_back() {
+        let used = history(
+            NOW,
+            &[("firefox.desktop", 4, NOW - DAY), ("dir.home", 1, NOW)],
+        );
+        let read = History::parse(&used.render(), NOW);
+        assert_eq!(read.entries, used.entries);
+        assert_eq!(read.bonus("firefox.desktop"), used.bonus("firefox.desktop"));
+    }
+
+    #[test]
+    fn an_unreadable_history_is_no_history_rather_than_an_error() {
+        for text in [
+            "",
+            "not a scene history
+1 2 firefox.desktop
+",
+            "scene-history 2
+1 2 firefox.desktop
+",
+        ] {
+            assert!(History::parse(text, NOW).entries.is_empty(), "{text:?}");
+        }
+
+        // A damaged line is skipped; the sound lines around it are kept.
+        let salvaged = History::parse(
+            "scene-history 1
+rubbish
+2 nonsense id
+3 1700 dir.home
+",
+            NOW,
+        );
+        assert_eq!(salvaged.entries.len(), 1);
+        assert!(salvaged.entries.contains_key("dir.home"));
+    }
+
+    #[test]
+    fn the_history_file_is_bounded() {
+        let mut full = History::parse(
+            "scene-history 1
+",
+            NOW,
+        );
+        for index in 0..HISTORY_LIMIT + 40 {
+            full.entries.insert(
+                format!("item.{index}"),
+                Use {
+                    count: 1,
+                    last: NOW - index as u64,
+                },
+            );
+        }
+        full.forget_oldest();
+        assert_eq!(full.entries.len(), HISTORY_LIMIT);
+        // The oldest entries are the ones dropped.
+        assert!(full.entries.contains_key("item.0"));
+        assert!(
+            !full
+                .entries
+                .contains_key(&format!("item.{}", HISTORY_LIMIT + 39))
+        );
+    }
+
+    #[test]
+    fn history_is_switched_off_by_the_environment() {
+        for value in ["off", "OFF", " off ", "0", "no", "false"] {
+            assert!(!enabled_by(Some(value)), "{value:?}");
+        }
+        for value in ["on", "1", ""] {
+            assert!(enabled_by(Some(value)), "{value:?}");
+        }
+        assert!(enabled_by(None), "history is on unless it is switched off");
+    }
+
+    #[test]
+    fn a_recorded_use_reaches_the_file_and_comes_back() {
+        // An explicit path, so this never touches the user's state directory.
+        let path =
+            std::env::temp_dir().join(format!("scene-history-test-{}-{}", std::process::id(), NOW));
+        let mut writing = History {
+            enabled: true,
+            path: Some(path.clone()),
+            now: NOW,
+            entries: BTreeMap::new(),
+        };
+        writing.record("dir.home");
+        writing.record("dir.home");
+        writing.record("firefox.desktop");
+
+        let text = std::fs::read_to_string(&path).expect("the history was written");
+        std::fs::remove_file(&path).expect("remove the test history");
+
+        let read = History::parse(&text, writing.now);
+        assert_eq!(read.entries.len(), 2);
+        assert_eq!(read.entries["dir.home"].count, 2);
+        assert_eq!(read.entries["firefox.desktop"].count, 1);
+        assert!(read.bonus("dir.home") > read.bonus("firefox.desktop"));
     }
 }

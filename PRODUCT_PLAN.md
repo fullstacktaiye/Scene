@@ -339,9 +339,13 @@ results, and closes reliably.
 - [x] Centered launcher window with focused search field.
 - [x] Static in-memory result provider.
 - [x] Query updates, Up/Down navigation, Enter, Escape, and empty-result state.
-- [x] Repeated activation has no duplicate windows or stale state.
+- [x] Repeated activation has no duplicate windows or stale state. Re-checked
+      during Milestone 4.5: invoking `scene` again while it was running exited
+      0 immediately and left exactly one process.
 - [x] UI styling can evolve without changing search or action logic.
-- [ ] Keyboard-only smoke path is reliable.
+- [x] Keyboard-only smoke path is reliable. Closed in Milestone 4.5 by the UI
+      smoke suite in `src/ui.rs`; see that milestone for what it proves and
+      what remains a manual check.
 
 ### Milestone 2 — Application discovery and launching
 
@@ -355,11 +359,14 @@ launches them through the desktop application model.
       available.
 - [x] Add deterministic fuzzy search and ranking.
 - [x] Present launch failures in the UI.
-- [ ] Add recent/frequent ranking only after baseline ranking is deterministic.
+- [x] Add recent/frequent ranking only after baseline ranking is deterministic.
+      Closed in Milestone 4.5: `search::History`, bounded so it cannot
+      overturn the baseline, and switched off with `SCENE_HISTORY=off`.
 - [x] Include a valid `.desktop` entry for Scene itself and follow the
       [desktop-entry specification](https://specifications.freedesktop.org/desktop-entry-spec/latest/).
-- [ ] Check packaging behavior against [Fedora desktop application packaging
-      guidance](https://docs.fedoraproject.org/nn/packaging-guidelines/).
+- [x] Check packaging behavior against [Fedora desktop application packaging
+      guidance](https://docs.fedoraproject.org/en-US/packaging-guidelines/).
+      Closed in Milestone 4.5; the result is `docs/fedora-packaging.md`.
 
 ### Milestone 3 — Safe command and integration framework
 
@@ -408,7 +415,10 @@ Recorded when Milestone 4 completed.
 milestone is either finished or carries an explicit deferral naming the
 milestone that will finish it.
 
-| Item | Originally due | Why it is still open |
+The table below records the state when this milestone opened; what closed each
+item is under **What was done** further down.
+
+| Item | Originally due | Why it was still open |
 | --- | --- | --- |
 | Keyboard-only smoke path is reliable | Milestone 1 | The bindings are wired and their logic is unit-tested, but nobody has driven Up/Down, Enter and Escape from a real keyboard. This Wayland session has no input-injection tool, so the item needs a manual pass or the UI smoke harness that Milestone 8 also calls for. |
 | Recent/frequent ranking | Milestone 2 | The plan gates it on a deterministic ranking baseline, which landed inside Milestone 2. The precondition has been met since; the work has not started, and no decision to defer it was recorded. |
@@ -417,21 +427,98 @@ milestone that will finish it.
 
 **Checklist:**
 
-- [ ] Drive the keyboard-only path end to end on KDE Plasma — query, Up/Down,
+- [x] Drive the keyboard-only path end to end on KDE Plasma — query, Up/Down,
       Enter, Escape, empty results, confirmation, and cancellation — and
       record the result. Add a UI smoke harness if manual validation keeps
       being the blocker.
-- [ ] Settle recent/frequent ranking: implement it over the deterministic
+- [x] Settle recent/frequent ranking: implement it over the deterministic
       baseline with a way to disable it, or move it to Milestone 6 with a
       stated reason. It must not stay implicit.
-- [ ] Check the desktop entry and the build against the [Fedora desktop
+- [x] Check the desktop entry and the build against the [Fedora desktop
       application packaging
-      guidance](https://docs.fedoraproject.org/nn/packaging-guidelines/), and
-      record what it requires that Scene does not yet do.
-- [ ] Observe a launched program's outcome, or say in the UI that Scene does
+      guidance](https://docs.fedoraproject.org/en-US/packaging-guidelines/),
+      and record what it requires that Scene does not yet do.
+- [x] Observe a launched program's outcome, or say in the UI that Scene does
       not. A launch that starts and then fails must not report success.
-- [ ] Every remaining unticked item in Milestones 0-4 is either closed here or
+- [x] Every remaining unticked item in Milestones 0-4 is either closed here or
       carries an explicit deferral with a target milestone.
+
+**What was done, and what it proves.**
+
+*Keyboard-only path.* Manual validation kept being the blocker — this Wayland
+session has no input-injection tool — so the milestone's stated alternative
+was taken: `src/ui.rs` now carries a UI smoke suite. It builds the real
+launcher against a stated set of items, presents the window, and drives the
+whole contract in order: activation focuses the search field, typing narrows
+and re-ranks, Down and Up move the selection and wrap at both ends, a query
+with no results shows the empty state and Enter on it does nothing, Enter runs
+the selected result and reports it, Escape clears the query and then closes,
+re-activation resets query, status and selection, a mutation asks before it
+acts and a result-row click cannot answer for it, Escape withdraws the
+confirmation, a second Enter confirms it, and a long action is cancelled from
+the keyboard. It runs against real GTK widgets and real `Outcome`s, and skips
+itself with a printed reason where there is no display.
+
+The limit is stated rather than hidden: keys enter at `Launcher::key`, the
+same method the window's key controller calls. What the suite does not prove
+is the compositor delivering a physical key press to that controller.
+
+That link was then driven by hand, which is what closes the item. **Manual
+pass: 2026-08-24, Fedora 44 / KDE Plasma 6.7 / Wayland, real keyboard.** The
+same sequence the suite runs: typing narrowed and re-ranked, Up and Down moved
+the selection and wrapped at both ends, a query with no results showed the
+empty state and Enter on it did nothing, Enter reported in the footer without
+closing the launcher, Escape cleared the query and then closed it, an
+`install` answer stopped at its confirmation and Escape withdrew it, and a
+terminal launch reported and then dismissed.
+
+The run left its own evidence in `$XDG_STATE_HOME/scene/history`, which
+recorded `scene.reporting`, `packages.metadata` and `terminal.open` at
+13:09:27, 13:09:46 and 13:10:46. The withdrawn `install` is *not* in that
+file, which is the recording rule working: use is recorded when an action
+starts, so a confirmation the user backed out of does not count as one. On the
+next activation the terminal row ranked above where it had sat before, which
+is the ranking adjustment observed end to end rather than only in a test.
+
+*Recent/frequent ranking.* Implemented rather than deferred: `search::History`
+records what was chosen and adjusts the score within a group. The adjustment
+is deliberately bounded — at most 24 for frequency plus 15 for recency, which
+is under the 40-point gap the matcher puts between a title hit and a keyword
+hit — so use can lift a result within its group but can never overturn the
+deterministic field order, and never crosses a group boundary. Ranking stays
+deterministic in the sense the plan requires, because the history is an
+explicit argument to `search`, not ambient state: the same query, items and
+history always give the same order. It is switched off entirely with
+`SCENE_HISTORY=off`, and Milestone 6 owns giving that a settings surface.
+State lives in `$XDG_STATE_HOME/scene/history`, in a format whose first line
+names its version, which is where Milestone 8's configuration migration will
+start.
+
+*Fedora packaging.* Performed and recorded in `docs/fedora-packaging.md`,
+against the guidelines' own source rather than the rendered site. The desktop
+entry and package independence already comply. Two gaps were closed outright
+because they were missing rather than deferred: the repository had no `LICENSE`
+file for `%license` to point at despite declaring MIT, and no AppStream
+metainfo, which a GUI application is expected to install. What remains is
+Milestone 8's: the spec file, an icon of Scene's own, screenshots, a release
+tarball, and a mock build.
+
+*Launch outcomes.* Both halves of the item are now true. Scene watches a
+program it starts for 400 ms and reports the exit status if it dies inside
+that window, so a launch that starts and then fails is reported as a failure
+rather than a success — and when the launcher has already closed, the window
+comes back to show it. For an installed application handed to the desktop
+there is no handle and no exit status to read, so Scene says so instead of
+claiming an outcome: `Outcome::Started` is a different answer from
+`Outcome::Succeeded`, and the built-in "What Scene Reports" result states the
+limit in words.
+
+**Deferred, with a target milestone.** One item in this area is deliberately
+not closed here and is not left implicit: `docs/krunner-parity.md` P1's
+support for a desktop entry's declared additional actions ("New Private
+Window", "Open a New Document"). It belongs with the inline-actions work in
+**Milestone 6** / parity P6, where a result can carry several operations,
+rather than as a special case in application discovery.
 
 ### Milestone 5 — Global activation and Copilot-key support
 

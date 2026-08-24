@@ -743,7 +743,12 @@ mod tests {
         for items in [none, refused, partial, unelevated] {
             for item in items {
                 assert!(
-                    !crate::search::search(&item.keywords[0].clone(), &[&item]).is_empty(),
+                    !crate::search::search(
+                        &item.keywords[0].clone(),
+                        &[&item],
+                        &crate::search::History::disabled()
+                    )
+                    .is_empty(),
                     "{} is unreachable from its own query",
                     item.title
                 );

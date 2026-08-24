@@ -6,9 +6,10 @@
 
 use std::io::ErrorKind;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -24,6 +25,15 @@ pub enum ExecutionPolicy {
     /// A durable system change. The UI must obtain confirmation first.
     Mutating,
 }
+
+/// How long Scene watches a program it started before it stops looking.
+///
+/// A graphical program is still running when this elapses, and that is the
+/// answer. A program that dies inside the window — a missing library, an
+/// argument the tool rejects — reports its real exit status instead of a
+/// success Scene never observed. Past the window Scene is not watching, and
+/// [`Outcome::Started`] says exactly that rather than claiming success.
+pub const START_WATCH: Duration = Duration::from_millis(400);
 
 #[derive(Clone, Debug)]
 pub struct Confirmation {
@@ -101,7 +111,13 @@ pub enum Action {
 pub enum Outcome {
     Pending(String),
     AwaitingConfirmation(String),
+    /// Scene watched the work finish successfully.
     Succeeded(String),
+    /// The program started and Scene is no longer watching it: a desktop
+    /// launch it has no handle on, or a program still running when
+    /// [`START_WATCH`] elapsed. Deliberately not [`Outcome::Succeeded`],
+    /// which is reserved for an outcome Scene actually observed.
+    Started(String),
     Reported(String),
     Unavailable(String),
     Failed(String),
@@ -110,15 +126,25 @@ pub enum Outcome {
     Quit,
 }
 
-/// A process in flight. The UI owns this handle and may cancel it at any time.
+/// A process in flight. The UI owns this handle, and may cancel it when the
+/// action is one Scene is waiting on.
 pub struct RunningAction {
     cancellation: CancellationToken,
     receiver: Receiver<Outcome>,
+    /// A watched launch is not cancellable. Escape closes the launcher; it
+    /// does not kill the program the user has just started.
+    cancellable: bool,
 }
 
 impl RunningAction {
     pub fn cancel(&self) {
-        self.cancellation.cancel();
+        if self.cancellable {
+            self.cancellation.cancel();
+        }
+    }
+
+    pub fn is_cancellable(&self) -> bool {
+        self.cancellable
     }
 
     pub fn try_finish(&self) -> Option<Outcome> {
@@ -131,18 +157,24 @@ pub enum StartedAction {
     Running(RunningAction),
 }
 
-/// Execute an action without blocking GTK. Only registered process actions
-/// run in a worker; desktop launches remain immediate desktop requests.
+/// Execute an action without blocking GTK. Anything that starts a process —
+/// a registered command or an `xdg-open` hand-off — runs in a worker, because
+/// even a detached start is watched for [`START_WATCH`] before Scene reports
+/// what happened. A desktop launch stays an immediate desktop request.
 pub fn start(action: &Action) -> StartedAction {
-    let Action::Process { action } = action else {
-        return StartedAction::Immediate(execute(action));
-    };
-    if action.policy == ExecutionPolicy::Mutating {
-        return StartedAction::Immediate(Outcome::Failed(
-            "Mutating actions must be confirmed before they are started.".into(),
-        ));
+    match action {
+        Action::Process { action } if action.policy == ExecutionPolicy::Mutating => {
+            StartedAction::Immediate(Outcome::Failed(
+                "Mutating actions must be confirmed before they are started.".into(),
+            ))
+        }
+        Action::Process { action } => start_process(action),
+        Action::Open { target } => match open_action(target) {
+            Ok(action) => start_process(&action),
+            Err(outcome) => StartedAction::Immediate(outcome),
+        },
+        _ => StartedAction::Immediate(execute(action)),
     }
-    start_process(action)
 }
 
 /// Start a previously confirmed mutating action. This is deliberately a
@@ -162,20 +194,25 @@ pub fn start_confirmed(action: &Action) -> StartedAction {
 }
 
 fn start_process(action: &ProcessAction) -> StartedAction {
-    if action.policy == ExecutionPolicy::Detached {
-        return StartedAction::Immediate(detached(action));
-    }
-
+    // A detached program is watched, not waited on: cancelling it would mean
+    // killing something the user asked to start, so the token never reaches it.
+    let cancellable = action.policy != ExecutionPolicy::Detached;
     let cancellation = CancellationToken::new();
     let worker_cancellation = cancellation.clone();
     let worker_action = action.clone();
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let _ = sender.send(run_process(&worker_action, &worker_cancellation));
+        let outcome = if worker_action.policy == ExecutionPolicy::Detached {
+            detached(&worker_action)
+        } else {
+            run_process(&worker_action, &worker_cancellation)
+        };
+        let _ = sender.send(outcome);
     });
     StartedAction::Running(RunningAction {
         cancellation,
         receiver,
+        cancellable,
     })
 }
 
@@ -271,7 +308,8 @@ fn run_process(action: &ProcessAction, cancellation: &CancellationToken) -> Outc
     }
 }
 
-/// Starts a graphical program without giving it input or inheriting output.
+/// Starts a program without giving it input or inheriting output, then
+/// watches it for as long as [`START_WATCH`].
 fn detached(action: &ProcessAction) -> Outcome {
     match Command::new(&action.spec.program)
         .args(&action.spec.args)
@@ -280,35 +318,60 @@ fn detached(action: &ProcessAction) -> Outcome {
         .stderr(Stdio::null())
         .spawn()
     {
-        Ok(mut child) => {
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
-            Outcome::Succeeded(format!("Started {}", action.title))
-        }
+        Ok(child) => watch(child, &action.title),
         Err(error) => Outcome::from(error, &action.spec.program),
+    }
+}
+
+/// Reports what the watch actually saw, and nothing more. A program that ends
+/// inside the window is reported by its exit status; one still running when
+/// the window closes is reported as started, not as succeeded.
+fn watch(mut child: Child, title: &str) -> Outcome {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                return Outcome::Succeeded(format!("{title} finished"));
+            }
+            Ok(Some(status)) => {
+                return Outcome::Failed(format!(
+                    "{title} exited with status {}",
+                    status
+                        .code()
+                        .map_or_else(|| "unknown".into(), |code| code.to_string())
+                ));
+            }
+            Ok(None) => {
+                if started.elapsed() >= START_WATCH {
+                    // Nothing waits on it from here, so it is reaped in the
+                    // background rather than left behind as a zombie.
+                    thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    return Outcome::Started(format!("{title} is running"));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Outcome::Failed(format!("Could not watch {title}: {error}")),
+        }
     }
 }
 
 /// Hands the application back to the desktop to start. The launch context
 /// carries the activation token, without which the new window would open
 /// behind Scene on Wayland.
+///
+/// The corollary is a real limit: the desktop owns the application from here,
+/// Scene holds no handle on it and has no exit status to read, so the outcome
+/// is [`Outcome::Started`] rather than a success it never observed. That limit
+/// is stated in the launcher's own "What Scene Reports" result.
 fn launch(app: &gio::AppInfo) -> Outcome {
     let name = app.display_name();
     let context = gdk::Display::default().map(|display| display.app_launch_context());
     match app.launch(&[], context.as_ref()) {
-        Ok(()) => Outcome::Succeeded(format!("Opened {name}")),
+        Ok(()) => Outcome::Started(format!("{name} was handed to the desktop")),
         Err(error) => Outcome::Failed(format!("Could not open {name}: {error}")),
     }
-}
-
-fn run(program: &str, args: &[String]) -> Outcome {
-    let action = ProcessAction::detached(
-        "legacy.run",
-        program,
-        CommandSpec::read_only(program, args.iter().cloned()),
-    );
-    detached(&action)
 }
 
 /// `mailto:` and `tel:` are URIs with no "//", so ask GLib rather than
@@ -317,13 +380,23 @@ fn is_uri(target: &str) -> bool {
     glib::Uri::peek_scheme(target).is_some()
 }
 
-fn open(target: &str) -> Outcome {
+/// The `xdg-open` hand-off for a path or URI, or the reason there is none. A
+/// path that does not exist is answered here rather than passed on.
+fn open_action(target: &str) -> Result<ProcessAction, Outcome> {
     if !is_uri(target) && !Path::new(target).exists() {
-        return Outcome::Unavailable(format!("{target} does not exist"));
+        return Err(Outcome::Unavailable(format!("{target} does not exist")));
     }
-    match run("xdg-open", &[target.to_string()]) {
-        Outcome::Succeeded(_) => Outcome::Succeeded(format!("Opened {target}")),
-        other => other,
+    Ok(ProcessAction::detached(
+        "open",
+        format!("Opening {target}"),
+        CommandSpec::read_only("xdg-open", [target.to_string()]),
+    ))
+}
+
+fn open(target: &str) -> Outcome {
+    match open_action(target) {
+        Ok(action) => detached(&action),
+        Err(outcome) => outcome,
     }
 }
 
@@ -341,7 +414,7 @@ impl Outcome {
     }
 
     pub fn should_dismiss(&self) -> bool {
-        matches!(self, Outcome::Succeeded(_))
+        matches!(self, Outcome::Succeeded(_) | Outcome::Started(_))
     }
 
     pub fn message(&self) -> &str {
@@ -349,6 +422,7 @@ impl Outcome {
             Outcome::Pending(message)
             | Outcome::AwaitingConfirmation(message)
             | Outcome::Succeeded(message)
+            | Outcome::Started(message)
             | Outcome::Reported(message)
             | Outcome::Unavailable(message)
             | Outcome::Failed(message)
@@ -363,6 +437,7 @@ impl Outcome {
             Outcome::Pending(_) => "Working",
             Outcome::AwaitingConfirmation(_) => "Confirm",
             Outcome::Succeeded(_) => "Done",
+            Outcome::Started(_) => "Started",
             Outcome::Reported(_) => "Scene",
             Outcome::Unavailable(_) => "Unavailable",
             Outcome::Failed(_) => "Failed",
@@ -377,6 +452,7 @@ impl Outcome {
             Outcome::Pending(_) => "process-working-symbolic",
             Outcome::AwaitingConfirmation(_) => "dialog-warning-symbolic",
             Outcome::Succeeded(_) => "emblem-ok-symbolic",
+            Outcome::Started(_) => "media-playback-start-symbolic",
             Outcome::Reported(_) => "dialog-information-symbolic",
             Outcome::Unavailable(_) => "action-unavailable-symbolic",
             Outcome::Failed(_) => "dialog-error-symbolic",
@@ -390,7 +466,7 @@ impl Outcome {
         match self {
             Outcome::Pending(_) | Outcome::Reported(_) => "info",
             Outcome::AwaitingConfirmation(_) | Outcome::Unavailable(_) => "warn",
-            Outcome::Succeeded(_) => "ok",
+            Outcome::Succeeded(_) | Outcome::Started(_) => "ok",
             Outcome::Failed(_) | Outcome::TimedOut(_) => "error",
             Outcome::Cancelled(_) => "info",
             Outcome::Quit => "info",
@@ -401,13 +477,83 @@ impl Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+
+    fn detach(program: &str, args: &[&str]) -> Outcome {
+        detached(&ProcessAction::detached(
+            "test.detached",
+            "Test program",
+            CommandSpec::read_only(program, args.iter().map(|argument| argument.to_string())),
+        ))
+    }
+
+    /// Same `ETXTBSY` race as `system::tests::run_fake`: a fork while another
+    /// test is still writing its fake program can see the file as busy. The
+    /// executable is sound; only the timing is not.
+    #[cfg(unix)]
+    fn detach_fake(body: &str) -> Outcome {
+        let program = crate::system::tests::fake_program(body);
+        let mut outcome = detach(&program.to_string_lossy(), &[]);
+        for _ in 0..50 {
+            let busy =
+                matches!(&outcome, Outcome::Failed(message) if message.contains("Text file busy"));
+            if !busy {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+            outcome = detach(&program.to_string_lossy(), &[]);
+        }
+        std::fs::remove_file(program).expect("remove fake executable");
+        outcome
+    }
 
     #[test]
     fn a_missing_program_is_unavailable_rather_than_failed() {
-        let outcome = run("scene-no-such-binary-for-tests", &[]);
+        let outcome = detach("scene-no-such-binary-for-tests", &[]);
         assert!(matches!(outcome, Outcome::Unavailable(_)), "{outcome:?}");
         assert!(!outcome.should_dismiss());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launch_that_starts_and_then_fails_is_not_reported_as_success() {
+        // The gap this closes: nothing used to wait on a detached program, so
+        // one that started and died immediately still reported success.
+        let outcome = detach_fake("exit 3");
+        assert!(
+            matches!(&outcome, Outcome::Failed(message) if message.contains("status 3")),
+            "{outcome:?}"
+        );
+        assert!(!outcome.should_dismiss());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_finishes_cleanly_inside_the_window_succeeded() {
+        let outcome = detach_fake("exit 0");
+        assert!(matches!(outcome, Outcome::Succeeded(_)), "{outcome:?}");
+        assert!(outcome.should_dismiss());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_still_running_when_the_window_closes_is_started_not_succeeded() {
+        // What a graphical program does. Scene stopped watching, so it says
+        // the program started rather than that it succeeded.
+        let started = Instant::now();
+        let outcome = detach_fake("sleep 5");
+        assert!(matches!(outcome, Outcome::Started(_)), "{outcome:?}");
+        assert!(started.elapsed() >= START_WATCH, "the watch ended early");
+        assert!(outcome.should_dismiss());
+    }
+
+    #[test]
+    fn started_is_a_different_answer_from_succeeded() {
+        let started = Outcome::Started("Firefox was handed to the desktop".into());
+        let succeeded = Outcome::Succeeded("Firefox finished".into());
+        assert_ne!(started.prefix(), succeeded.prefix());
+        assert_ne!(started.icon(), succeeded.icon());
+        // Both close the launcher; only one of them claims an observed result.
+        assert!(started.should_dismiss() && succeeded.should_dismiss());
     }
 
     #[test]
@@ -455,6 +601,7 @@ mod tests {
             Outcome::Pending(String::new()),
             Outcome::AwaitingConfirmation(String::new()),
             Outcome::Succeeded(String::new()),
+            Outcome::Started(String::new()),
             Outcome::Reported(String::new()),
             Outcome::Unavailable(String::new()),
             Outcome::Failed(String::new()),

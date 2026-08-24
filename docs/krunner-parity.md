@@ -164,14 +164,19 @@ after a baseline exists (`PRODUCT_PLAN.md` §10), but the shape is fixed:
 
 ### 3.2 Ranking
 
-- [ ] Ranking is deterministic: the same query against the same index gives
-      the same order.
+- [x] Ranking is deterministic: the same query against the same index gives
+      the same order — and, since `M4.5`, against the same history too, which
+      is an explicit argument to `search::search` rather than ambient state.
 - [ ] Provider priority is explicit and configurable, not an accident of
       registration order.
 - [ ] Exact and prefix matches outrank fuzzy matches; title matches outrank
       keyword matches.
-- [ ] History and frequency adjust ranking only after the deterministic
-      baseline is in place, and can be disabled.
+- [x] History and frequency adjust ranking only after the deterministic
+      baseline is in place, and can be disabled. `search::History`, added in
+      `M4.5`: bounded below the matcher's own field penalties so it can lift a
+      result within its group but never overturn a title match or cross a
+      group boundary, and switched off with `SCENE_HISTORY=off`. A settings
+      surface for it is P6's.
 
 ### 3.3 Failure behaviour
 
@@ -212,20 +217,32 @@ any path or URL, at least as reliably as with KRunner.
       startup notification and scope are correct.
 - [ ] Support a `.desktop` entry's declared additional actions.
 - [x] Open paths, `file://`, `http(s)://`, and `mailto:` URIs.
-- [ ] Report a launch failure in the UI, distinguishing missing executable,
+- [x] Report a launch failure in the UI, distinguishing missing executable,
       permission denied, and non-zero exit.
 
-Notes on the two unticked items and one qualified tick:
+Notes on the one unticked item, the gap `M4.5` closed, and one qualified
+tick:
 
 **Additional actions** are not implemented. A `.desktop` entry can declare
 extra actions — "New Private Window", "Open a New Document" — and Scene
 currently ignores them. This is the right shape for the inline-actions work in
 P6 rather than a special case here, so it is deliberately deferred.
 
-**Launch failure detail** is partial. A missing executable and a permission
-failure are distinguished, but a detached process's non-zero exit is not
-observed at all, because nothing is watching it. Closing that gap is the
-bounded-execution work in `M3`, not a patch to the launcher.
+**Launch failure detail** is complete as of `M4.5`. A missing executable and
+a permission failure were already distinguished; a detached process's non-zero
+exit was not observed at all, because nothing was watching it. It is watched
+now: `actions::detached` holds the child for 400 ms (`actions::START_WATCH`)
+and reports its real exit status if it dies inside that window, and the
+launcher re-presents itself to show a failure that arrives after it closed.
+
+The boundary that remains is stated rather than papered over. An application
+launched through the desktop's own application model is not Scene's child and
+has no exit status Scene can read, so `Outcome::Started` says the program was
+handed over rather than claiming `Outcome::Succeeded`, and the built-in "What
+Scene Reports" result says so in the UI. Polling `/proc` for the pid was
+considered and rejected: a wrapper that forks and exits — which several
+`.desktop` entries do — would be reported as a failure it is not, and a wrong
+failure is worse than an honest silence.
 
 **Indexing** is synchronous rather than threaded. Discovery measures 12-19 ms
 warm and 27 ms cold for 292 entries, and runs at startup before any window
