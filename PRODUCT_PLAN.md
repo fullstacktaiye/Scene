@@ -367,15 +367,15 @@ changing the launcher UI, and failures stay localized.
 
 **Checklist:**
 
-- [ ] Define integration metadata, search, action, configuration, result,
+- [x] Define integration metadata, search, action, configuration, result,
       error, and cancellation contracts.
-- [ ] Add integrations for opening a terminal, showing system information,
+- [x] Add integrations for opening a terminal, showing system information,
       searching or launching installed applications, opening a configured
       directory, and querying the detected package manager without mutation.
-- [ ] Add typed execution policies, timeouts, output capture, and cancellation.
-- [ ] Show confirmation for mutating actions.
-- [ ] Isolate provider failures from the rest of the result set.
-- [ ] Prove the contract by adding an integration without changing search UI
+- [x] Add typed execution policies, timeouts, output capture, and cancellation.
+- [x] Show confirmation for mutating actions.
+- [x] Isolate provider failures from the rest of the result set.
+- [x] Prove the contract by adding an integration without changing search UI
       code.
 
 ### Milestone 4 — Distro capability adapters

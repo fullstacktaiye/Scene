@@ -5,12 +5,13 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk::accessible::{Property, State};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib, pango};
 
-use crate::actions::{self, Outcome};
+use crate::actions::{self, Outcome, RunningAction, StartedAction};
 use crate::search::{self, Item};
 
 const WIDTH: i32 = 720;
@@ -46,6 +47,10 @@ pub struct Launcher {
     hits: RefCell<Vec<usize>>,
     rows: RefCell<Vec<gtk::ListBoxRow>>,
     selected: Cell<usize>,
+    /// The action selected for confirmation is frozen here. Query changes and
+    /// selection movement cannot substitute a different mutation on Enter.
+    pending_confirmation: RefCell<Option<crate::actions::Action>>,
+    running: RefCell<Option<RunningAction>>,
 }
 
 impl Launcher {
@@ -172,6 +177,8 @@ impl Launcher {
             hits: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             selected: Cell::new(0),
+            pending_confirmation: RefCell::new(None),
+            running: RefCell::new(None),
         });
 
         launcher.connect_signals();
@@ -205,7 +212,7 @@ impl Launcher {
                 l.selected.set(position);
                 l.apply_selection();
             }
-            l.activate_selected();
+            l.activate_selected(false);
         });
 
         // Capture phase: arrows and Enter are ours before the entry sees them,
@@ -220,7 +227,7 @@ impl Launcher {
             match key {
                 gdk::Key::Down => l.move_selection(1),
                 gdk::Key::Up => l.move_selection(-1),
-                gdk::Key::Return | gdk::Key::KP_Enter => l.activate_selected(),
+                gdk::Key::Return | gdk::Key::KP_Enter => l.activate_selected(true),
                 gdk::Key::Escape => l.dismiss(),
                 _ => return glib::Propagation::Proceed,
             }
@@ -319,7 +326,24 @@ impl Launcher {
         }
     }
 
-    fn activate_selected(&self) {
+    fn activate_selected(self: &Rc<Self>, confirm_pending: bool) {
+        if self.running.borrow().is_some() {
+            return;
+        }
+        if self.pending_confirmation.borrow().is_some() {
+            // A result-row click may have changed the selected row, but it is
+            // never an unambiguous confirmation for a previously displayed
+            // mutation. Only Enter accepts the frozen confirmation payload.
+            if confirm_pending {
+                let action = self
+                    .pending_confirmation
+                    .borrow_mut()
+                    .take()
+                    .expect("checked pending confirmation");
+                self.start_action(&action, true);
+            }
+            return;
+        }
         let index = {
             let hits = self.hits.borrow();
             match hits.get(self.selected.get()) {
@@ -328,7 +352,63 @@ impl Launcher {
             }
         };
 
-        let outcome = actions::execute(&self.items.borrow()[index].action);
+        let action = self.items.borrow()[index].action.clone();
+        if actions::requires_confirmation(&action) {
+            let crate::actions::Action::Process { action: process } = &action else {
+                unreachable!()
+            };
+            let text = actions::confirmation_text(process);
+            *self.pending_confirmation.borrow_mut() = Some(action);
+            self.show_status(&Outcome::AwaitingConfirmation(text));
+            return;
+        }
+        self.start_action(&action, false);
+    }
+
+    fn start_action(self: &Rc<Self>, action: &crate::actions::Action, confirmed: bool) {
+        let started = if confirmed {
+            actions::start_confirmed(action)
+        } else {
+            actions::start(action)
+        };
+        match started {
+            StartedAction::Running(running) => {
+                let title = match action {
+                    crate::actions::Action::Process { action } => action.title.clone(),
+                    _ => "Action".into(),
+                };
+                *self.running.borrow_mut() = Some(running);
+                self.show_status(&Outcome::Pending(format!(
+                    "{title} is running. Press Escape to cancel."
+                )));
+                self.watch_running();
+            }
+            StartedAction::Immediate(outcome) => self.finish_outcome(outcome),
+        }
+    }
+
+    fn watch_running(self: &Rc<Self>) {
+        let launcher = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(25), move || {
+            let Some(launcher) = launcher.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let outcome = launcher
+                .running
+                .borrow()
+                .as_ref()
+                .and_then(RunningAction::try_finish);
+            if let Some(outcome) = outcome {
+                launcher.running.borrow_mut().take();
+                launcher.finish_outcome(outcome);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    fn finish_outcome(&self, outcome: Outcome) {
         if outcome == Outcome::Quit {
             if let Some(app) = self.window.application() {
                 app.quit();
@@ -342,6 +422,15 @@ impl Launcher {
 
     /// Escape cancels the query first, and only then closes the launcher.
     fn dismiss(&self) {
+        if let Some(running) = self.running.borrow().as_ref() {
+            running.cancel();
+            self.show_status(&Outcome::Pending("Cancelling action…".into()));
+            return;
+        }
+        if self.pending_confirmation.borrow_mut().take().is_some() {
+            self.clear_status();
+            return;
+        }
         if self.entry.text().is_empty() {
             self.window.set_visible(false);
         } else {

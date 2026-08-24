@@ -1,6 +1,8 @@
 mod actions;
 mod apps;
+mod integrations;
 mod search;
+mod system;
 mod ui;
 
 use std::cell::RefCell;

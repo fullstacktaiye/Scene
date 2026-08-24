@@ -92,7 +92,9 @@ impl Item {
 /// Everything Scene can currently find: the installed applications, plus the
 /// built-in folders, links and commands.
 pub fn index() -> Vec<Item> {
-    let mut items = crate::apps::installed();
+    let mut items = crate::integrations::index();
+    // Built-in Scene help is itself a provider-like static catalogue. It stays
+    // separate because it needs no discovery or executable capability.
     items.extend(catalogue());
     items
 }
@@ -241,7 +243,7 @@ pub fn catalogue() -> Vec<Item> {
                 text: concat!(
                     "Scene ",
                     env!("CARGO_PKG_VERSION"),
-                    " — Milestone 2. Searching your installed applications."
+                    " — Milestone 3. Bounded integrations are ready."
                 )
                 .into(),
             },

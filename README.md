@@ -3,8 +3,8 @@
 A fast, keyboard-first Linux launcher. See [`PRODUCT_PLAN.md`](PRODUCT_PLAN.md)
 for what Scene is meant to become.
 
-This repository currently contains **Milestone 2 — application discovery and
-launching**.
+This repository currently contains **Milestone 3 — safe command and
+integration framework**.
 
 ## Build and run
 
@@ -54,6 +54,34 @@ src/
 
 `ui.rs` renders what `search` produced and reports what `actions` returned. It
 never decides either, so the styling can change without touching the logic.
+
+## Milestone 3 status
+
+Scene has a typed built-in integration registry. Adding an integration means
+implementing its metadata and `search` contract in `src/integrations.rs`; the
+GTK search UI remains unchanged. Providers can return an explicit error, which
+becomes one local unavailable result rather than removing unrelated results.
+
+- [x] Built-ins: installed applications, terminal launch, system information,
+      configured directory, and detected package-manager information.
+- [x] Registered read-only processes run off the GTK thread with a fixed
+      timeout, null input, bounded stdout/stderr capture, and Escape-driven
+      cancellation. Terminal launch is a separate detached policy.
+- [x] Process outcomes distinguish unavailable tools, permission errors,
+      cancellation, timeouts, non-zero exits, and captured output.
+- [x] Mutating policy is structurally separate from read-only and detached
+      work. It freezes the action payload and requires an explicit Enter
+      confirmation; result-row clicks cannot accidentally confirm it.
+- [x] `SCENE_DIRECTORY=/path/to/open scene` changes the directory integration.
+      It defaults to the user's home directory when unset.
+
+The package integration selects `apt-cache`, `dnf`, or `pacman` only when its
+executable is found on `PATH`, then runs its `--version` query. It performs no
+package mutation; package search and mutating adapters belong to Milestone 4.
+
+Automated verification covers the provider-error isolation, configuration,
+confirmation decision, cancellation-before-spawn, bounded output, captured
+stdout/stderr, and timeout behavior using temporary fake executables.
 
 ## Milestone 2 status
 
@@ -109,11 +137,12 @@ Verified on Fedora 44, KDE Plasma, Wayland, GTK 4.22.
       logic is unit-tested, but this Wayland session has no input-injection
       tool, so nobody has driven them from a real keyboard yet.
 
-Sixteen unit tests cover ranking determinism, grouping, case and whitespace
-handling, category labelling, and the action outcomes for a missing executable
-and a missing path. Ranking tests run against a fixture rather than the live
-index, so they do not depend on what happens to be installed. The launcher
-starts with no GTK or CSS warnings on stderr.
+Twenty-four unit tests cover ranking determinism, grouping, case and
+whitespace handling, category labelling, provider isolation, and the action
+outcomes for missing executables, cancellation, output capture, and timeouts.
+Ranking tests run against a fixture rather than the live index, so they do not
+depend on what happens to be installed. The launcher starts with no GTK or CSS
+warnings on stderr.
 
 Out of scope here, by design: the integration and confirmation framework
 (Milestone 3).
