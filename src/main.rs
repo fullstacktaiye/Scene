@@ -1,6 +1,7 @@
 mod actions;
 mod apps;
 mod integrations;
+mod packages;
 mod search;
 mod system;
 mod ui;

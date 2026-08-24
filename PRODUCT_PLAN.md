@@ -173,6 +173,7 @@ app
 ├── search        query parsing, fuzzy matching, ranking, result groups
 ├── actions       typed actions, policy, confirmation, result/error state
 ├── integrations  registered providers with explicit metadata and behavior
+├── packages      distro capability adapters and their package operations
 ├── platform      desktop session, shortcuts, windows, workspaces
 └── system        command discovery, adapters, subprocesses, timeouts, output
 ```
@@ -318,14 +319,14 @@ boundaries.
 
 **Checklist:**
 
-- [ ] `PRODUCT_PLAN.md` explains what Scene is and is not.
-- [ ] Product principles, initial user journeys, and visual direction are
+- [x] `PRODUCT_PLAN.md` explains what Scene is and is not.
+- [x] Product principles, initial user journeys, and visual direction are
       documented.
-- [ ] Keyboard, accessibility, integration, safety, and KDE-first assumptions
+- [x] Keyboard, accessibility, integration, safety, and KDE-first assumptions
       are explicit.
-- [ ] The full vision and deferred features are separated from the first
+- [x] The full vision and deferred features are separated from the first
       implementation scope.
-- [ ] Every later milestone has an outcome and completion checklist.
+- [x] Every later milestone has an outcome and completion checklist.
 
 ### Milestone 1 — Launcher shell
 
@@ -335,11 +336,11 @@ results, and closes reliably.
 
 **Checklist:**
 
-- [ ] Centered launcher window with focused search field.
-- [ ] Static in-memory result provider.
-- [ ] Query updates, Up/Down navigation, Enter, Escape, and empty-result state.
-- [ ] Repeated activation has no duplicate windows or stale state.
-- [ ] UI styling can evolve without changing search or action logic.
+- [x] Centered launcher window with focused search field.
+- [x] Static in-memory result provider.
+- [x] Query updates, Up/Down navigation, Enter, Escape, and empty-result state.
+- [x] Repeated activation has no duplicate windows or stale state.
+- [x] UI styling can evolve without changing search or action logic.
 - [ ] Keyboard-only smoke path is reliable.
 
 ### Milestone 2 — Application discovery and launching
@@ -349,13 +350,13 @@ launches them through the desktop application model.
 
 **Checklist:**
 
-- [ ] Discover Linux desktop entries asynchronously or incrementally.
-- [ ] Render application icons, names, descriptions, and categories where
+- [x] Discover Linux desktop entries asynchronously or incrementally.
+- [x] Render application icons, names, descriptions, and categories where
       available.
-- [ ] Add deterministic fuzzy search and ranking.
-- [ ] Present launch failures in the UI.
+- [x] Add deterministic fuzzy search and ranking.
+- [x] Present launch failures in the UI.
 - [ ] Add recent/frequent ranking only after baseline ranking is deterministic.
-- [ ] Include a valid `.desktop` entry for Scene itself and follow the
+- [x] Include a valid `.desktop` entry for Scene itself and follow the
       [desktop-entry specification](https://specifications.freedesktop.org/desktop-entry-spec/latest/).
 - [ ] Check packaging behavior against [Fedora desktop application packaging
       guidance](https://docs.fedoraproject.org/nn/packaging-guidelines/).
@@ -385,15 +386,15 @@ appropriate available tool on Debian-family, Fedora, and Arch systems.
 
 **Checklist:**
 
-- [ ] Implement shared adapters for Debian/Ubuntu-family, Fedora, and Arch.
-- [ ] Expose package search, metadata, installed-package, and update
+- [x] Implement shared adapters for Debian/Ubuntu-family, Fedora, and Arch.
+- [x] Expose package search, metadata, installed-package, and update
       capabilities where supported.
-- [ ] Gate optional mutation actions behind confirmation.
-- [ ] Detect executable capabilities rather than relying only on distro name.
-- [ ] Report missing tools, permission issues, and unsupported operations
+- [x] Gate optional mutation actions behind confirmation.
+- [x] Detect executable capabilities rather than relying only on distro name.
+- [x] Report missing tools, permission issues, and unsupported operations
       clearly.
-- [ ] Verify at least one Debian/Ubuntu-family, Fedora, and Arch environment.
-- [ ] Verify core launcher behavior when an adapter is unavailable.
+- [x] Verify at least one Debian/Ubuntu-family, Fedora, and Arch environment.
+- [x] Verify core launcher behavior when an adapter is unavailable.
 
 ### Milestone 5 — Global activation and Copilot-key support
 

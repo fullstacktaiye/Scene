@@ -12,6 +12,7 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib, pango};
 
 use crate::actions::{self, Outcome, RunningAction, StartedAction};
+use crate::integrations;
 use crate::search::{self, Item};
 
 const WIDTH: i32 = 720;
@@ -42,6 +43,10 @@ pub struct Launcher {
     status_label: gtk::Label,
 
     items: RefCell<Vec<Item>>,
+    /// The providers' answers to the current query. They exist only while the
+    /// query asks for them, so they are rebuilt on every refresh rather than
+    /// indexed.
+    answers: RefCell<Vec<Item>>,
     /// Held so the installed-applications signal stays connected.
     _apps: gio::AppInfoMonitor,
     hits: RefCell<Vec<usize>>,
@@ -173,6 +178,7 @@ impl Launcher {
             status_icon,
             status_label,
             items: RefCell::new(search::index()),
+            answers: RefCell::new(Vec::new()),
             _apps: gio::AppInfoMonitor::get(),
             hits: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
@@ -247,8 +253,14 @@ impl Launcher {
 
     fn refresh(&self) {
         let query = self.entry.text().to_string();
+        *self.answers.borrow_mut() = integrations::answers(&query);
+
+        let answers = self.answers.borrow();
         let items = self.items.borrow();
-        let hits = search::search(&query, &items);
+        // One ranked list over both sources, so a query answer is ordered by
+        // the same rules as everything else rather than pinned by the UI.
+        let visible: Vec<&Item> = answers.iter().chain(items.iter()).collect();
+        let hits = search::search(&query, &visible);
 
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
@@ -257,7 +269,7 @@ impl Launcher {
         let mut group = None;
 
         for &index in &hits {
-            let item = &items[index];
+            let item = visible[index];
             if group != Some(item.kind) {
                 group = Some(item.kind);
                 self.list.append(&section_row(item.kind.heading()));
@@ -275,6 +287,8 @@ impl Launcher {
                 .set_text(&format!("No results for “{}”", query.trim()));
         }
 
+        drop(items);
+        drop(answers);
         *self.hits.borrow_mut() = hits;
         *self.rows.borrow_mut() = rows;
         self.selected.set(0);
@@ -352,7 +366,9 @@ impl Launcher {
             }
         };
 
-        let action = self.items.borrow()[index].action.clone();
+        let Some(action) = self.action_at(index) else {
+            return;
+        };
         if actions::requires_confirmation(&action) {
             let crate::actions::Action::Process { action: process } = &action else {
                 unreachable!()
@@ -363,6 +379,20 @@ impl Launcher {
             return;
         }
         self.start_action(&action, false);
+    }
+
+    /// Resolve a ranked position back to its item. Answers are ranked ahead
+    /// of the index, so they occupy the first positions of the same list.
+    fn action_at(&self, index: usize) -> Option<crate::actions::Action> {
+        let answers = self.answers.borrow();
+        if let Some(item) = answers.get(index) {
+            return Some(item.action.clone());
+        }
+        let index = index - answers.len();
+        self.items
+            .borrow()
+            .get(index)
+            .map(|item| item.action.clone())
     }
 
     fn start_action(self: &Rc<Self>, action: &crate::actions::Action, confirmed: bool) {

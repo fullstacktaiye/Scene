@@ -60,6 +60,24 @@ impl ProcessAction {
             confirmation: None,
         }
     }
+
+    /// A durable system change. The confirmation is not optional here: the
+    /// type system, not a caller's diligence, is what keeps a mutation from
+    /// reaching [`start`].
+    pub fn mutating(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        spec: CommandSpec,
+        confirmation: Confirmation,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            spec,
+            policy: ExecutionPolicy::Mutating,
+            confirmation: Some(confirmation),
+        }
+    }
 }
 
 /// What executing a result actually does.
@@ -413,16 +431,15 @@ mod tests {
     #[test]
     fn a_mutating_action_cannot_start_without_confirmation() {
         let action = Action::Process {
-            action: ProcessAction {
-                id: "test.mutate".into(),
-                title: "Change something".into(),
-                spec: CommandSpec::read_only("false", [] as [&str; 0]),
-                policy: ExecutionPolicy::Mutating,
-                confirmation: Some(Confirmation {
+            action: ProcessAction::mutating(
+                "test.mutate",
+                "Change something",
+                CommandSpec::read_only("false", [] as [&str; 0]),
+                Confirmation {
                     summary: "This changes something.".into(),
                     target: "test target".into(),
-                }),
-            },
+                },
+            ),
         };
         assert!(requires_confirmation(&action));
         assert!(matches!(
@@ -454,12 +471,7 @@ mod tests {
         let action = ProcessAction::read_only(
             "test",
             "Test",
-            CommandSpec {
-                program: "test".into(),
-                args: vec![],
-                timeout: Duration::from_secs(2),
-                output_limit: 10,
-            },
+            CommandSpec::read_only("test", [] as [&str; 0]).with_timeout(Duration::from_secs(2)),
         );
         assert_eq!(action.spec.timeout, Duration::from_secs(2));
     }

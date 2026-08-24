@@ -111,6 +111,7 @@ list.results > row {
   color: #F1F1F4;
 }
 
+.tile.package     { background: linear-gradient(155deg, rgba(255, 122, 158, 0.32), rgba(255, 122, 158, 0.09)); }
 .tile.application { background: linear-gradient(155deg, rgba(139, 123, 255, 0.34), rgba(139, 123, 255, 0.09)); }
 .tile.folder      { background: linear-gradient(155deg, rgba(90, 178, 255, 0.32), rgba(90, 178, 255, 0.09)); }
 .tile.web         { background: linear-gradient(155deg, rgba(72, 212, 166, 0.30), rgba(72, 212, 166, 0.09)); }

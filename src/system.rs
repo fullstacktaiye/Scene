@@ -5,6 +5,7 @@
 //! the GTK surface is interpreted as a shell command.
 
 use std::io::{ErrorKind, Read};
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{
     Arc,
@@ -31,6 +32,26 @@ impl CancellationToken {
     }
 }
 
+/// The absolute path of an executable on `PATH`, if it is there.
+///
+/// Capability detection goes through here rather than through a distribution
+/// name: what matters is whether the program is actually installed.
+pub fn locate(program: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| locate_in(&path, program))
+}
+
+/// The search itself, over a stated path list rather than the environment, so
+/// a test can describe where to look without mutating the process.
+fn locate_in(path: &std::ffi::OsStr, program: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|directory| directory.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+pub fn executable_on_path(program: &str) -> bool {
+    locate(program).is_some()
+}
+
 /// The command is registered by an integration, never assembled from a query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSpec {
@@ -38,6 +59,9 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     pub timeout: Duration,
     pub output_limit: usize,
+    /// Exit codes that mean success for this particular command, besides the
+    /// universal zero.
+    pub accepted_exit_codes: Vec<i32>,
 }
 
 impl CommandSpec {
@@ -50,7 +74,27 @@ impl CommandSpec {
             args: args.into_iter().map(Into::into).collect(),
             timeout: Duration::from_secs(3),
             output_limit: 16 * 1024,
+            accepted_exit_codes: vec![0],
         }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_output_limit(mut self, limit: usize) -> Self {
+        self.output_limit = limit;
+        self
+    }
+
+    /// Some tools answer a question with an exit status. `dnf check-update`
+    /// exits 100 when updates exist, and `pacman --query --upgrades` exits 1
+    /// when none do. Neither is a failure, and neither should be reported as
+    /// one.
+    pub fn accepting(mut self, codes: impl IntoIterator<Item = i32>) -> Self {
+        self.accepted_exit_codes.extend(codes);
+        self
     }
 }
 
@@ -140,11 +184,14 @@ pub fn run(spec: &CommandSpec, cancellation: &CancellationToken) -> ProcessResul
         stderr: String::from_utf8_lossy(&stderr).trim().to_string(),
         truncated: stdout_truncated || stderr_truncated,
     };
-    exit_result(status, output)
+    exit_result(spec, status, output)
 }
 
-fn exit_result(status: ExitStatus, output: ProcessOutput) -> ProcessResult {
-    if status.success() {
+fn exit_result(spec: &CommandSpec, status: ExitStatus, output: ProcessOutput) -> ProcessResult {
+    let accepted = status
+        .code()
+        .is_some_and(|code| spec.accepted_exit_codes.contains(&code));
+    if status.success() || accepted {
         Ok(output)
     } else {
         Err(ProcessError::NonZero {
@@ -195,6 +242,25 @@ mod tests {
         assert!(truncated);
     }
 
+    /// A test that forks while another test is still writing a fake program
+    /// can hold that file's write descriptor for a moment, and the kernel
+    /// answers `ETXTBSY`. The executable is sound; only the timing is not.
+    #[cfg(unix)]
+    fn run_fake(spec: &CommandSpec, cancellation: &CancellationToken) -> ProcessResult {
+        for _ in 0..50 {
+            let result = run(spec, cancellation);
+            let busy = matches!(
+                &result,
+                Err(ProcessError::Spawn(message)) if message.contains("Text file busy")
+            );
+            if !busy {
+                return result;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        run(spec, cancellation)
+    }
+
     #[cfg(unix)]
     fn fake_program(body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -220,7 +286,7 @@ mod tests {
     #[test]
     fn captures_stdout_and_stderr_from_a_registered_fake_program() {
         let program = fake_program("printf 'out'; printf 'err' >&2");
-        let output = run(
+        let output = run_fake(
             &CommandSpec::read_only(program.to_string_lossy(), [] as [&str; 0]),
             &CancellationToken::new(),
         )
@@ -232,11 +298,68 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn an_accepted_exit_code_is_success_and_an_unlisted_one_is_not() {
+        // `dnf check-update` answers 100 when updates exist. Reporting that as
+        // a failure would be wrong; reporting any other non-zero code as
+        // success would be worse.
+        let program = fake_program("printf 'updates'; exit 100");
+        let spec = CommandSpec::read_only(program.to_string_lossy(), [] as [&str; 0]);
+
+        let strict = run_fake(&spec, &CancellationToken::new());
+        assert!(
+            matches!(
+                strict,
+                Err(ProcessError::NonZero {
+                    status: Some(100),
+                    ..
+                })
+            ),
+            "{strict:?}"
+        );
+
+        let lenient = run_fake(&spec.clone().accepting([100]), &CancellationToken::new())
+            .expect("100 is an answer for this command");
+        assert_eq!(lenient.stdout, "updates");
+
+        let unrelated = run_fake(&spec.accepting([1]), &CancellationToken::new());
+        assert!(
+            matches!(
+                unrelated,
+                Err(ProcessError::NonZero {
+                    status: Some(100),
+                    ..
+                })
+            ),
+            "{unrelated:?}"
+        );
+        std::fs::remove_file(program).expect("remove fake executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locate_finds_a_program_on_the_path_and_reports_a_missing_one() {
+        let program = fake_program("true");
+        let directory = program.parent().expect("a temporary directory").to_owned();
+        let name = program.file_name().expect("a file name").to_owned();
+
+        assert_eq!(
+            locate_in(directory.as_os_str(), &name.to_string_lossy()).as_deref(),
+            Some(program.as_path())
+        );
+        assert_eq!(
+            locate_in(directory.as_os_str(), "scene-no-such-binary-for-tests"),
+            None
+        );
+        std::fs::remove_file(&program).expect("remove fake executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_running_fake_program_is_stopped_at_its_timeout() {
         let program = fake_program("sleep 1");
         let mut spec = CommandSpec::read_only(program.to_string_lossy(), [] as [&str; 0]);
         spec.timeout = Duration::from_millis(20);
-        let result = run(&spec, &CancellationToken::new());
+        let result = run_fake(&spec, &CancellationToken::new());
         std::fs::remove_file(program).expect("remove fake executable");
         assert_eq!(
             result,

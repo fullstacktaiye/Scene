@@ -314,16 +314,41 @@ applications.
 **Outcome:** A user can find an application they do not yet have, and install
 it deliberately.
 
-- [ ] Search available packages through the detected package manager.
-- [ ] Show package metadata: version, size, repository, summary.
+**Status:** complete except where noted, with adapter commands verified on
+Fedora 44, `debian:stable-slim`, and `archlinux:latest`.
+
+- [x] Search available packages through the detected package manager.
+- [x] Show package metadata: version, size, repository, summary.
 - [ ] Distinguish installed from available in the result itself.
-- [ ] Offer install and remove **only** behind explicit confirmation naming
+- [x] Offer install and remove **only** behind explicit confirmation naming
       the operation and target.
-- [ ] Escalate privilege through the desktop's supported mechanism, never by
+- [x] Escalate privilege through the desktop's supported mechanism, never by
       assuming `sudo`.
-- [ ] Report the real outcome, including permission failure, missing tool, and
+- [x] Report the real outcome, including permission failure, missing tool, and
       non-zero exit — never success merely because a process started.
-- [ ] The launcher's core behaviour is unaffected when no adapter is usable.
+- [x] The launcher's core behaviour is unaffected when no adapter is usable.
+
+Notes on the one unticked item and on the shape of the rest:
+
+**Installed versus available** is answered, but as a separate result rather
+than as a property of one merged row. `pkg NAME` returns three results — a
+repository search, the package's metadata, and whether it is installed
+locally — because each is a different command with a different cost, and
+merging them means running all three before anything can be shown. Merging
+them into one row is real work for P6's inline actions, where a result can
+carry several operations, not a patch here.
+
+**Results are executed, not streamed.** A package query builds its command on
+every keystroke but runs nothing until Enter. That keeps the launcher within
+`PRODUCT_PLAN.md` principle 1 without a per-keystroke process, and it is what
+lets the exact argument vector be shown before it runs — §5.4's requirement,
+met here rather than deferred. The cost is that a package search is a
+deliberate action rather than live-as-you-type; that trade is stated in the
+migration note P6 owns.
+
+**Privilege** is `pkexec` and nothing else. There is no `sudo` fallback and no
+Scene-owned password prompt: without PolicyKit, install and remove report
+themselves unavailable.
 
 ### P6 — Shell parity and daily-driver readiness
 

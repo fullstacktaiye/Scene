@@ -4,6 +4,8 @@
 //! produces the same order. Providers hand this module typed items; it never
 //! executes anything and never touches the UI.
 
+use std::borrow::Borrow;
+
 use gtk::gio;
 use gtk::prelude::*;
 
@@ -11,6 +13,9 @@ use crate::actions::Action;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    /// An answer to a query that named a package. These exist only while the
+    /// query asks for them, which is why they lead.
+    Package,
     Application,
     Folder,
     Web,
@@ -21,15 +26,17 @@ impl Kind {
     /// Groups appear in this order, best first.
     fn priority(self) -> u8 {
         match self {
-            Kind::Application => 0,
-            Kind::Folder => 1,
-            Kind::Web => 2,
-            Kind::Scene => 3,
+            Kind::Package => 0,
+            Kind::Application => 1,
+            Kind::Folder => 2,
+            Kind::Web => 3,
+            Kind::Scene => 4,
         }
     }
 
     pub fn heading(self) -> &'static str {
         match self {
+            Kind::Package => "PACKAGES",
             Kind::Application => "APPLICATIONS",
             Kind::Folder => "FOLDERS",
             Kind::Web => "WEB",
@@ -39,6 +46,7 @@ impl Kind {
 
     pub fn tag(self) -> &'static str {
         match self {
+            Kind::Package => "Package",
             Kind::Application => "Application",
             Kind::Folder => "Folder",
             Kind::Web => "Link",
@@ -50,6 +58,7 @@ impl Kind {
     /// icon of its own for an item.
     pub fn slug(self) -> &'static str {
         match self {
+            Kind::Package => "package",
             Kind::Application => "application",
             Kind::Folder => "folder",
             Kind::Web => "web",
@@ -59,6 +68,7 @@ impl Kind {
 
     pub fn fallback_icon(self) -> &'static str {
         match self {
+            Kind::Package => "package-x-generic-symbolic",
             Kind::Application => "application-x-executable-symbolic",
             Kind::Folder => "folder-symbolic",
             Kind::Web => "web-browser-symbolic",
@@ -101,11 +111,15 @@ pub fn index() -> Vec<Item> {
 
 /// Returns the indices of `items` that match `query`, grouped by kind and
 /// ranked within each group. An empty query matches everything.
-pub fn search(query: &str, items: &[Item]) -> Vec<usize> {
+///
+/// It takes anything that borrows an `Item`, so the caller can rank one owned
+/// index and a set of query answers together without copying either.
+pub fn search<I: Borrow<Item>>(query: &str, items: &[I]) -> Vec<usize> {
     let needle = query.trim().to_lowercase();
 
     let mut hits: Vec<(u8, i32, usize)> = items
         .iter()
+        .map(Borrow::borrow)
         .enumerate()
         .filter_map(|(i, item)| {
             let score = if needle.is_empty() {
@@ -243,7 +257,7 @@ pub fn catalogue() -> Vec<Item> {
                 text: concat!(
                     "Scene ",
                     env!("CARGO_PKG_VERSION"),
-                    " — Milestone 3. Bounded integrations are ready."
+                    " — Milestone 4. Distro package adapters are ready."
                 )
                 .into(),
             },
@@ -401,6 +415,59 @@ mod tests {
 
         // "command" appears only in Terminal's description.
         assert!(titles("command", &items).contains(&"Terminal".to_string()));
+    }
+
+    #[test]
+    fn the_package_group_sorts_ahead_of_every_other_group() {
+        let priorities: Vec<u8> = [
+            Kind::Package,
+            Kind::Application,
+            Kind::Folder,
+            Kind::Web,
+            Kind::Scene,
+        ]
+        .map(Kind::priority)
+        .to_vec();
+        assert!(priorities.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn a_query_answer_leads_the_results_it_was_generated_for() {
+        // A provider's answer to "install firefox" must not be buried under
+        // the installed Firefox, which matches the same words.
+        let items = fixture();
+        let answer = Item {
+            id: "packages.install".to_string(),
+            title: "Install “firefox”".to_string(),
+            subtitle: "pkexec dnf install --assumeyes firefox".to_string(),
+            kind: Kind::Package,
+            icon: None,
+            category: None,
+            keywords: words(&["install firefox", "firefox", "package"]),
+            action: Action::Message {
+                text: "install".to_string(),
+            },
+        };
+
+        // The same shape the launcher ranks: answers first, then the index.
+        let answers = [answer];
+        let visible: Vec<&Item> = answers.iter().chain(items.iter()).collect();
+        let hits = search("install firefox", &visible);
+
+        assert_eq!(
+            visible[hits[0]].title, "Install “firefox”",
+            "the answer should lead"
+        );
+
+        // With no package query, the index ranks exactly as it did before.
+        let plain: Vec<&Item> = items.iter().collect();
+        assert_eq!(
+            search("fire", &plain)
+                .into_iter()
+                .map(|i| plain[i].title.clone())
+                .collect::<Vec<_>>(),
+            titles("fire", &items)
+        );
     }
 
     #[test]

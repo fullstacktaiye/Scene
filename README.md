@@ -3,8 +3,8 @@
 A fast, keyboard-first Linux launcher. See [`PRODUCT_PLAN.md`](PRODUCT_PLAN.md)
 for what Scene is meant to become.
 
-This repository currently contains **Milestone 3 — safe command and
-integration framework**.
+This repository currently contains **Milestone 4 — distro capability
+adapters**.
 
 ## Build and run
 
@@ -40,20 +40,94 @@ opening a second one.
 | Click | Selects and runs, through the same path as Enter |
 | Ctrl+Q | Quits Scene |
 
+Three keywords reach the package adapter for this machine:
+
+| Query | Result |
+| --- | --- |
+| `pkg NAME` | Search for the package, show its metadata, say whether it is installed |
+| `install NAME` | Install it, behind an explicit confirmation |
+| `remove NAME` (or `uninstall NAME`) | Remove it, behind an explicit confirmation |
+
+Each row's subtitle is the exact command it will run, unexpanded, so you can
+read it before pressing Enter.
+
 ## Layout
 
 ```text
 src/
-├── main.rs     process lifecycle, activation, window reuse
-├── apps.rs     installed application discovery
-├── search.rs   matching, ranking, grouping, the built-in result set
-├── actions.rs  typed actions and their outcomes
-├── ui.rs       window, search field, result list, footer
-└── style.css   the launcher's appearance
+├── main.rs          process lifecycle, activation, window reuse
+├── apps.rs          installed application discovery
+├── search.rs        matching, ranking, grouping, the built-in result set
+├── integrations.rs  the provider registry and its contracts
+├── packages.rs      distro capability adapters
+├── actions.rs       typed actions and their outcomes
+├── system.rs        executable discovery and bounded subprocesses
+├── ui.rs            window, search field, result list, footer
+└── style.css        the launcher's appearance
 ```
 
 `ui.rs` renders what `search` produced and reports what `actions` returned. It
 never decides either, so the styling can change without touching the logic.
+
+## Milestone 4 status
+
+Adapter commands verified against Fedora 44 (host), `debian:stable-slim`, and
+`archlinux:latest`. The launcher itself is verified on Fedora 44 / KDE Plasma
+6.7 / Wayland only.
+
+- [x] Shared adapters for Debian/Ubuntu, Fedora, and Arch — one `Adapter`
+      interface in `src/packages.rs` declaring six capabilities per family.
+      Nothing in that module runs a process; it answers with a fully specified
+      `Plan` that `actions` and `system` then execute under the existing
+      bounded policy.
+- [x] Package search, metadata, installed-package, and update capabilities.
+      Each is a real result row whose subtitle is the argument vector it will
+      run.
+- [x] Mutation behind confirmation — `install` and `remove` are the first
+      `ExecutionPolicy::Mutating` actions in Scene. They freeze their payload
+      and need a deliberate Enter; a result-row click cannot confirm one.
+- [x] Capability detection by executable, not distribution name. `/etc/os-release`
+      only orders which adapter is probed first: a machine that calls itself
+      Fedora but carries only `pacman` is detected as Arch, and one that names
+      a family it has no tooling for is detected as nothing.
+- [x] Missing tools, permission problems, and unsupported operations are
+      reported in words. A capability that cannot run still produces a result
+      saying why — a missing `rpm`, an absent `pkexec`, a package name that
+      cannot be one.
+- [x] Verified on all three families. Every adapter's argument vector was run
+      in the environment it targets, for a package that exists, a package that
+      does not, and the update query. The install vectors were checked against
+      a deliberately nonexistent package, so they reach package resolution and
+      change nothing.
+- [x] Core launcher behaviour when no adapter is usable — running Scene with an
+      empty `PATH` leaves the window, application discovery, folders, links,
+      and Scene's own commands working; the terminal, system-information, and
+      package providers each become one local unavailable result.
+
+### What the live runs found
+
+Three exit codes are answers rather than failures, and the adapters accept
+them: `dpkg-query`, `rpm --query`, and `pacman --query --info` all exit 1 for a
+package that is simply not installed; `pacman --sync --search` exits 1 when
+nothing matches; `dnf check-update` exits 100 when updates exist. Everything
+else non-zero is still reported as a failure with the tool's own message.
+`dnf` is run with `--assumeno` so a repository-key prompt is declined rather
+than waiting on closed input.
+
+### Privilege
+
+Mutation runs through `pkexec`, so the desktop's own authentication agent asks
+for authorisation. Scene has no `sudo` fallback and no password prompt of its
+own: when `pkexec` is absent, install and remove report that they are
+unavailable and say why.
+
+### Not verified
+
+The GTK launcher itself has not been run on a Debian or Arch desktop — only its
+adapter commands have. No real install or removal was performed on the
+development machine; the elevated path is covered by unit tests over the plan,
+the policy, and the confirmation text, and by running the install argument
+vectors against a nonexistent package in containers.
 
 ## Milestone 3 status
 
@@ -75,13 +149,14 @@ becomes one local unavailable result rather than removing unrelated results.
 - [x] `SCENE_DIRECTORY=/path/to/open scene` changes the directory integration.
       It defaults to the user's home directory when unset.
 
-The package integration selects `apt-cache`, `dnf`, or `pacman` only when its
-executable is found on `PATH`, then runs its `--version` query. It performs no
-package mutation; package search and mutating adapters belong to Milestone 4.
-
 Automated verification covers the provider-error isolation, configuration,
 confirmation decision, cancellation-before-spawn, bounded output, captured
 stdout/stderr, and timeout behavior using temporary fake executables.
+
+Milestone 4 replaced the placeholder `--version` package query with the real
+capability adapters, and added a second provider contract — `answer`, for
+results that only exist while a query asks for them. Adding either kind of
+provider still needs no change to `ui.rs`.
 
 ## Milestone 2 status
 
@@ -137,9 +212,11 @@ Verified on Fedora 44, KDE Plasma, Wayland, GTK 4.22.
       logic is unit-tested, but this Wayland session has no input-injection
       tool, so nobody has driven them from a real keyboard yet.
 
-Twenty-four unit tests cover ranking determinism, grouping, case and
-whitespace handling, category labelling, provider isolation, and the action
-outcomes for missing executables, cancellation, output capture, and timeouts.
+Fifty-three unit tests cover ranking determinism, grouping, case and
+whitespace handling, category labelling, provider isolation, package-name
+validation, capability detection, adapter argument vectors, and the action
+outcomes for missing executables, cancellation, output capture, accepted exit
+codes, and timeouts.
 Ranking tests run against a fixture rather than the live index, so they do not
 depend on what happens to be installed. The launcher starts with no GTK or CSS
 warnings on stderr.
@@ -171,7 +248,9 @@ HighContrast theme is active.
 
 `docs/krunner-parity.md` records what KRunner actually ships on Plasma 6.7 —
 31 runners, read off this machine — and the P1-P6 track to match and exceed
-it. Milestone 2 completes parity item **P1**.
+it. Milestone 2 completes parity item **P1**; Milestone 4 completes most of
+**P5**, whose remaining gap is showing installed and available packages as one
+merged result rather than separate rows.
 
 ## Tests
 
