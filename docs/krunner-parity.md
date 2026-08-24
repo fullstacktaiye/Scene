@@ -167,7 +167,7 @@ after a baseline exists (`PRODUCT_PLAN.md` §10), but the shape is fixed:
 - [x] Ranking is deterministic: the same query against the same index gives
       the same order — and, since `M4.5`, against the same history too, which
       is an explicit argument to `search::search` rather than ambient state.
-- [ ] Provider priority is explicit and configurable, not an accident of
+- [x] Provider priority is explicit and configurable, not an accident of
       registration order.
 - [ ] Exact and prefix matches outrank fuzzy matches; title matches outrank
       keyword matches.
@@ -180,10 +180,10 @@ after a baseline exists (`PRODUCT_PLAN.md` §10), but the shape is fixed:
 
 ### 3.3 Failure behaviour
 
-- [ ] A provider that throws, times out, or returns malformed data is
+- [x] A provider that throws, times out, or returns malformed data is
       isolated. Other result groups and the launcher shell keep working.
-- [ ] A failed provider is reported in the UI, not silently dropped.
-- [ ] A capability that is unavailable on this session says so, in words, when
+- [x] A failed provider is reported in the UI, not silently dropped.
+- [x] A capability that is unavailable on this session says so, in words, when
       the user searches for it.
 
 ### 3.4 Accessibility and input
@@ -215,18 +215,16 @@ any path or URL, at least as reliably as with KRunner.
 - [x] Render the real themed icon, with a deterministic fallback.
 - [x] Launch through the desktop application model, not a bare `exec`, so
       startup notification and scope are correct.
-- [ ] Support a `.desktop` entry's declared additional actions.
+- [x] Support a `.desktop` entry's declared additional actions.
 - [x] Open paths, `file://`, `http(s)://`, and `mailto:` URIs.
 - [x] Report a launch failure in the UI, distinguishing missing executable,
       permission denied, and non-zero exit.
 
-Notes on the one unticked item, the gap `M4.5` closed, and one qualified
-tick:
+Notes on the gap `M4.5` closed and one qualified tick:
 
-**Additional actions** are not implemented. A `.desktop` entry can declare
-extra actions — "New Private Window", "Open a New Document" — and Scene
-currently ignores them. This is the right shape for the inline-actions work in
-P6 rather than a special case here, so it is deliberately deferred.
+**Additional actions** are exposed through the same typed inline-action model
+as every other provider. `Ctrl+K` opens the selected result's action menu and
+GIO launches the named desktop action without extracting a shell command.
 
 **Launch failure detail** is complete as of `M4.5`. A missing executable and
 a permission failure were already distinguished; a detached process's non-zero
@@ -265,19 +263,19 @@ hidden carry `NoDisplay=true`, which accounts for the difference.
 **Outcome:** Queries that have an answer produce the answer inline, and
 keyworded queries reach the right provider.
 
-- [ ] A query-parsing layer that recognises provider keywords and prefixes
+- [x] A query-parsing layer that recognises provider keywords and prefixes
       without hard-coding them into the UI.
-- [ ] Arithmetic, including an explicit `=` prefix, with the result
+- [x] Arithmetic, including an explicit `=` prefix, with the result
       copyable to the clipboard.
-- [ ] Unit conversion across at least length, mass, temperature, area,
+- [x] Unit conversion across at least length, mass, temperature, area,
       volume, time, and data.
-- [ ] Current date and time, and conversion between named timezones.
-- [ ] Colour conversion between hex, RGB, and HSL, with a visible swatch that
+- [x] Current date and time, and conversion between named timezones.
+- [x] Colour conversion between hex, RGB, and HSL, with a visible swatch that
       is also labelled in text.
-- [ ] Character lookup by Unicode code point and by name.
-- [ ] Web shortcuts with user-configurable keywords, seeded from the user's
+- [x] Character lookup by Unicode code point and by name.
+- [x] Web shortcuts with user-configurable keywords, seeded from the user's
       existing KDE web shortcuts where they can be read.
-- [ ] An answer result states its provider, so an unexpected answer is
+- [x] An answer result states its provider, so an unexpected answer is
       traceable.
 
 ### P3 — Session, system, and windows
@@ -289,17 +287,17 @@ keyworded queries reach the right provider.
 **Outcome:** A user can reach system state and open windows from the
 launcher, and destructive actions are confirmed rather than fired blind.
 
-- [ ] List and switch to open windows, showing application, title, and
+- [x] List and switch to open windows, showing application, title, and
       desktop/activity.
-- [ ] Open a named System Settings module.
-- [ ] Power actions: suspend, hibernate, lock, log out, reboot, shut down.
-- [ ] **Exceed:** every power and session action is confirmed, naming the
+- [x] Open a named System Settings module.
+- [x] Power actions: suspend, hibernate, lock, log out, reboot, shut down.
+- [x] **Exceed:** every power and session action is confirmed, naming the
       consequence, before anything happens.
-- [ ] Find a process by name and terminate it.
-- [ ] **Exceed:** process termination is confirmed, naming the process and
+- [x] Find a process by name and terminate it.
+- [x] **Exceed:** process termination is confirmed, naming the process and
       PID, and reports whether the signal actually took effect.
-- [ ] Trigger a configured KDE global shortcut by name.
-- [ ] All of the above degrade to a clear unsupported-capability result on a
+- [x] Trigger a configured KDE global shortcut by name.
+- [x] All of the above degrade to a clear unsupported-capability result on a
       non-Plasma session rather than failing obscurely.
 
 ### P4 — Files, places, and history
@@ -311,16 +309,16 @@ launcher, and destructive actions are confirmed rather than fired blind.
 **Outcome:** A user can find their own files and folders as readily as their
 applications.
 
-- [ ] File search by name, with content search where an index is available.
-- [ ] Use the existing Baloo index when it is present and enabled; report
+- [x] File search by name, with content search where an index is available.
+- [x] Use the existing Baloo index when it is present and enabled; report
       plainly when it is not, and do not silently build a competing index.
-- [ ] Recently opened documents.
-- [ ] KDE Places entries, including remote and removable entries, with
+- [x] Recently opened documents.
+- [x] KDE Places entries, including remote and removable entries, with
       unmounted targets marked as such.
-- [ ] Browser bookmarks from at least one Firefox-family and one
+- [x] Browser bookmarks from at least one Firefox-family and one
       Chromium-family profile, read-only, with the profile named in the UI.
-- [ ] File results offer open, open-containing-folder, and copy-path actions.
-- [ ] File-content search is off by default and its privacy implication is
+- [x] File results offer open, open-containing-folder, and copy-path actions.
+- [x] File-content search is off by default and its privacy implication is
       stated where it is enabled.
 
 ### P5 — Packages and installable applications
@@ -336,7 +334,7 @@ Fedora 44, `debian:stable-slim`, and `archlinux:latest`.
 
 - [x] Search available packages through the detected package manager.
 - [x] Show package metadata: version, size, repository, summary.
-- [ ] Distinguish installed from available in the result itself.
+- [x] Distinguish installed from available in the result itself.
 - [x] Offer install and remove **only** behind explicit confirmation naming
       the operation and target.
 - [x] Escalate privilege through the desktop's supported mechanism, never by
@@ -345,15 +343,12 @@ Fedora 44, `debian:stable-slim`, and `archlinux:latest`.
       non-zero exit — never success merely because a process started.
 - [x] The launcher's core behaviour is unaffected when no adapter is usable.
 
-Notes on the one unticked item and on the shape of the rest:
+Notes on the merged result and on the shape of the rest:
 
-**Installed versus available** is answered, but as a separate result rather
-than as a property of one merged row. `pkg NAME` returns three results — a
-repository search, the package's metadata, and whether it is installed
-locally — because each is a different command with a different cost, and
-merging them means running all three before anything can be shown. Merging
-them into one row is real work for P6's inline actions, where a result can
-carry several operations, not a patch here.
+**Installed versus available** is now one asynchronously assembled row.
+Repository search, metadata, and local installed state run away from the UI
+thread; the row labels itself Installed, Available, or Not found and exposes
+the applicable inspect/install/remove operations through inline actions.
 
 **Results are executed, not streamed.** A package query builds its command on
 every keystroke but runs nothing until Enter. That keeps the launcher within
@@ -375,14 +370,14 @@ themselves unavailable.
 **Outcome:** Scene is what the user actually reaches for, and KRunner's
 shortcut can be reassigned without regret.
 
-- [ ] Command history: recall, re-run, and clear, with history off-by-default
+- [x] Command history: recall, re-run, and clear, with history off-by-default
       or clearable in one action.
-- [ ] Per-provider enable/disable and reordering in a settings surface.
-- [ ] Inline actions on results, reachable by keyboard.
-- [ ] Switch KDE Activity.
-- [ ] Autostart integration so Scene is resident and warm at login.
+- [x] Per-provider enable/disable and reordering in a settings surface.
+- [x] Inline actions on results, reachable by keyboard.
+- [x] Switch KDE Activity.
+- [x] Autostart integration so Scene is resident and warm at login.
 - [ ] Single-instance activation stays correct under rapid repeated toggling.
-- [ ] A documented migration note covering what a KRunner user gains, loses,
+- [x] A documented migration note covering what a KRunner user gains, loses,
       and must reconfigure.
 - [ ] Manual daily-driver validation: KRunner unbound for one week, with the
       gaps encountered recorded in this document.
@@ -418,15 +413,15 @@ has nowhere to express any of this.
 safety model (`PRODUCT_PLAN.md` §6) forbids exactly that, so this is a
 redesign rather than a match or a decline:
 
-- [ ] Shell execution is never implicit. Typing text that happens to name a
+- [x] Shell execution is never implicit. Typing text that happens to name a
       binary does not offer to run it as a shell command.
-- [ ] An explicit, clearly-marked command action exists, with a declared
+- [x] An explicit, clearly-marked command action exists, with a declared
       executable, arguments, environment, working directory, timeout, and
       output limit.
-- [ ] It shows the exact argument vector that will be executed, unexpanded,
+- [x] It shows the exact argument vector that will be executed, unexpanded,
       before running it.
-- [ ] It requires confirmation.
-- [ ] Its output, exit status, and failure reason are visible afterwards.
+- [x] It requires confirmation.
+- [x] Its output, exit status, and failure reason are visible afterwards.
 
 This is deliberately less convenient than `krunner_shell` for the user who
 wants a one-keystroke shell. That trade is the product's position, and the

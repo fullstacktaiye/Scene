@@ -28,6 +28,7 @@ pub enum Kind {
 
 impl Kind {
     /// Groups appear in this order, best first.
+    #[cfg(test)]
     fn priority(self) -> u8 {
         match self {
             Kind::Package => 0,
@@ -35,16 +36,6 @@ impl Kind {
             Kind::Folder => 2,
             Kind::Web => 3,
             Kind::Scene => 4,
-        }
-    }
-
-    pub fn heading(self) -> &'static str {
-        match self {
-            Kind::Package => "PACKAGES",
-            Kind::Application => "APPLICATIONS",
-            Kind::Folder => "FOLDERS",
-            Kind::Web => "WEB",
-            Kind::Scene => "SCENE",
         }
     }
 
@@ -102,8 +93,12 @@ impl Kind {
     }
 }
 
+#[derive(Clone)]
 pub struct Item {
     pub id: String,
+    pub provider: String,
+    pub provider_title: String,
+    pub provider_priority: u16,
     pub title: String,
     pub subtitle: String,
     pub kind: Kind,
@@ -114,6 +109,14 @@ pub struct Item {
     /// "Application".
     pub category: Option<String>,
     pub keywords: Vec<String>,
+    pub action: Action,
+    pub secondary_actions: Vec<ItemAction>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ItemAction {
+    pub id: String,
+    pub label: String,
     pub action: Action,
 }
 
@@ -127,11 +130,7 @@ impl Item {
 /// Everything Scene can currently find: the installed applications, plus the
 /// built-in folders, links and commands.
 pub fn index() -> Vec<Item> {
-    let mut items = crate::integrations::index();
-    // Built-in Scene help is itself a provider-like static catalogue. It stays
-    // separate because it needs no discovery or executable capability.
-    items.extend(catalogue());
-    items
+    crate::integrations::index()
 }
 
 /// Returns the indices of `items` that match `query`, grouped by kind and
@@ -145,7 +144,7 @@ pub fn index() -> Vec<Item> {
 pub fn search<I: Borrow<Item>>(query: &str, items: &[I], history: &History) -> Vec<usize> {
     let needle = query.trim().to_lowercase();
 
-    let mut hits: Vec<(u8, i32, usize)> = items
+    let mut hits: Vec<(u16, i32, usize)> = items
         .iter()
         .map(Borrow::borrow)
         .enumerate()
@@ -155,7 +154,11 @@ pub fn search<I: Borrow<Item>>(query: &str, items: &[I], history: &History) -> V
             } else {
                 score(&needle, item)?
             };
-            Some((item.kind.priority(), -(score + history.bonus(&item.id)), i))
+            Some((
+                item.provider_priority,
+                -(score + history.bonus(&item.id)),
+                i,
+            ))
         })
         .collect();
 
@@ -173,28 +176,29 @@ pub fn search<I: Borrow<Item>>(query: &str, items: &[I], history: &History) -> V
 /// carries no information: what leads a group there is what the user has
 /// actually used. A query ranks against something, so it is never trimmed —
 /// searching still reaches every result.
-fn resting<I: Borrow<Item>>(hits: Vec<(u8, i32, usize)>, items: &[I]) -> Vec<(u8, i32, usize)> {
+fn resting<I: Borrow<Item>>(hits: Vec<(u16, i32, usize)>, items: &[I]) -> Vec<(u16, i32, usize)> {
     let mut kept = Vec::with_capacity(hits.len());
-    let mut group = None;
-    let mut taken = 0;
+    let mut taken = BTreeMap::<String, usize>::new();
 
-    // The hits are already grouped, because priority sorts first.
     for hit in hits {
-        if group != Some(hit.0) {
-            group = Some(hit.0);
-            taken = 0;
-        }
-        taken += 1;
-        if items[hit.2]
-            .borrow()
-            .kind
-            .resting_limit()
-            .is_none_or(|limit| taken <= limit)
-        {
+        let item = items[hit.2].borrow();
+        let count = taken.entry(item.provider.clone()).or_default();
+        *count += 1;
+        if item_resting_limit(item).is_none_or(|limit| *count <= limit) {
             kept.push(hit);
         }
     }
     kept
+}
+
+fn item_resting_limit(item: &Item) -> Option<usize> {
+    match item.provider.as_str() {
+        "applications" => Some(5),
+        "bookmarks" | "recent-documents" | "kde-places" | "system-settings"
+        | "global-shortcuts" => Some(5),
+        "declined" => Some(0),
+        _ => item.kind.resting_limit(),
+    }
 }
 
 /// Best score across an item's searchable text, or `None` if nothing matches.
@@ -296,8 +300,8 @@ impl History {
     /// be read. A history that fails to load is never an error the user has to
     /// deal with: the launcher ranks on the baseline and starts recording
     /// again.
-    pub fn load() -> Self {
-        if !enabled_by_environment() {
+    pub fn load_enabled(enabled: bool) -> Self {
+        if !enabled {
             return Self::disabled();
         }
         let path = state_path();
@@ -308,6 +312,19 @@ impl History {
         let mut history = Self::parse(&text, seconds_since_epoch());
         history.path = path;
         history
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        self.path = enabled.then(state_path).flatten();
+        if enabled {
+            self.save();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.save();
     }
 
     /// Note that a result was chosen, and persist it.
@@ -420,12 +437,9 @@ fn frequency_bonus(count: u32) -> i32 {
 /// "can be disabled" the ranking rules require. Milestone 6 gives it a
 /// settings surface; until then it is one environment variable, like
 /// `SCENE_DIRECTORY`.
-fn enabled_by_environment() -> bool {
-    enabled_by(std::env::var("SCENE_HISTORY").ok().as_deref())
-}
-
 /// The decision on its own, so it can be tested without touching the process
 /// environment other tests are reading at the same time.
+#[cfg(test)]
 fn enabled_by(value: Option<&str>) -> bool {
     match value {
         Some(value) => !matches!(
@@ -470,6 +484,9 @@ pub fn catalogue() -> Vec<Item> {
 
     let folder = |id: &str, title: &str, path: String, keywords: &[&str]| Item {
         id: id.to_string(),
+        provider: "places".into(),
+        provider_title: "Places".into(),
+        provider_priority: 30,
         title: title.to_string(),
         subtitle: path.clone(),
         kind: Kind::Folder,
@@ -477,10 +494,14 @@ pub fn catalogue() -> Vec<Item> {
         category: None,
         keywords: words(keywords),
         action: Action::Open { target: path },
+        secondary_actions: Vec::new(),
     };
 
     let link = |id: &str, title: &str, url: &str, keywords: &[&str]| Item {
         id: id.to_string(),
+        provider: "web".into(),
+        provider_title: "Web".into(),
+        provider_priority: 40,
         title: title.to_string(),
         subtitle: url.to_string(),
         kind: Kind::Web,
@@ -490,6 +511,7 @@ pub fn catalogue() -> Vec<Item> {
         action: Action::Open {
             target: url.to_string(),
         },
+        secondary_actions: Vec::new(),
     };
 
     vec![
@@ -520,6 +542,9 @@ pub fn catalogue() -> Vec<Item> {
         ),
         Item {
             id: "scene.settings".to_string(),
+            provider: "scene".into(),
+            provider_title: "Scene".into(),
+            provider_priority: 90,
             title: "Scene Settings".into(),
             subtitle: "Global shortcut and Copilot-key status".into(),
             kind: Kind::Scene,
@@ -534,9 +559,13 @@ pub fn catalogue() -> Vec<Item> {
                 "configure",
             ]),
             action: Action::ShowSettings,
+            secondary_actions: Vec::new(),
         },
         Item {
             id: "scene.about".to_string(),
+            provider: "scene".into(),
+            provider_title: "Scene".into(),
+            provider_priority: 90,
             title: "About Scene".into(),
             subtitle: "What this build can do".into(),
             kind: Kind::Scene,
@@ -551,9 +580,13 @@ pub fn catalogue() -> Vec<Item> {
                 )
                 .into(),
             },
+            secondary_actions: Vec::new(),
         },
         Item {
             id: "scene.reporting".to_string(),
+            provider: "scene".into(),
+            provider_title: "Scene".into(),
+            provider_priority: 90,
             title: "What Scene Reports".into(),
             subtitle: "Which outcomes Scene actually watched".into(),
             kind: Kind::Scene,
@@ -566,9 +599,13 @@ pub fn catalogue() -> Vec<Item> {
                     crate::actions::START_WATCH.as_secs_f32()
                 ),
             },
+            secondary_actions: Vec::new(),
         },
         Item {
             id: "scene.keys".to_string(),
+            provider: "scene".into(),
+            provider_title: "Scene".into(),
+            provider_priority: 90,
             title: "Keyboard Shortcuts".into(),
             subtitle: "How to drive Scene without a mouse".into(),
             kind: Kind::Scene,
@@ -578,9 +615,13 @@ pub fn catalogue() -> Vec<Item> {
             action: Action::Message {
                 text: "Up and Down to move, Enter to open, Escape to clear then close, Ctrl+, for settings, Ctrl+Q to quit.".into(),
             },
+            secondary_actions: Vec::new(),
         },
         Item {
             id: "scene.quit".to_string(),
+            provider: "scene".into(),
+            provider_title: "Scene".into(),
+            provider_priority: 90,
             title: "Quit Scene".into(),
             subtitle: "Stop the launcher entirely".into(),
             kind: Kind::Scene,
@@ -588,6 +629,7 @@ pub fn catalogue() -> Vec<Item> {
             category: None,
             keywords: words(&["exit", "close", "stop"]),
             action: Action::Quit,
+            secondary_actions: Vec::new(),
         },
     ]
 }
@@ -600,8 +642,15 @@ pub(crate) mod tests {
     /// installed applications or on the catalogue's current contents. The UI
     /// smoke harness drives the launcher against it for the same reason.
     pub(crate) fn fixture() -> Vec<Item> {
-        let item = |id: &str, title: &str, subtitle: &str, kind, keywords: &[&str]| Item {
+        let item = |id: &str, title: &str, subtitle: &str, kind: Kind, keywords: &[&str]| Item {
             id: id.to_string(),
+            provider: if kind == Kind::Application {
+                "applications".into()
+            } else {
+                kind.slug().into()
+            },
+            provider_title: kind.tag().into(),
+            provider_priority: u16::from(kind.priority()),
             title: title.to_string(),
             subtitle: subtitle.to_string(),
             kind,
@@ -611,6 +660,7 @@ pub(crate) mod tests {
             action: Action::Message {
                 text: title.to_string(),
             },
+            secondary_actions: Vec::new(),
         };
 
         vec![
@@ -744,6 +794,9 @@ pub(crate) mod tests {
         let items = fixture();
         let answer = Item {
             id: "packages.install".to_string(),
+            provider: "packages".into(),
+            provider_title: "Packages".into(),
+            provider_priority: 0,
             title: "Install “firefox”".to_string(),
             subtitle: "pkexec dnf install --assumeyes firefox".to_string(),
             kind: Kind::Package,
@@ -753,6 +806,7 @@ pub(crate) mod tests {
             action: Action::Message {
                 text: "install".to_string(),
             },
+            secondary_actions: Vec::new(),
         };
 
         // The same shape the launcher ranks: answers first, then the index.
@@ -833,6 +887,9 @@ pub(crate) mod tests {
         for index in 0..10 {
             items.push(Item {
                 id: format!("app{index}.desktop"),
+                provider: "applications".into(),
+                provider_title: "Applications".into(),
+                provider_priority: 1,
                 title: format!("Zebra {index}"),
                 subtitle: "A discovered application".into(),
                 kind: Kind::Application,
@@ -842,6 +899,7 @@ pub(crate) mod tests {
                 action: Action::Message {
                     text: "zebra".to_string(),
                 },
+                secondary_actions: Vec::new(),
             });
         }
         items

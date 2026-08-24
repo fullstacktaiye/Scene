@@ -7,11 +7,12 @@
 //! wants — generic name, keywords, categories — are read from the entry with
 //! `KeyFile`.
 
+use gio_unix::DesktopAppInfo;
 use gtk::gio::prelude::*;
 use gtk::{gio, glib};
 
 use crate::actions::Action;
-use crate::search::{Item, Kind};
+use crate::search::{Item, ItemAction, Kind};
 
 /// Every installed application the desktop says belongs in this session.
 ///
@@ -56,8 +57,27 @@ fn item(app: gio::AppInfo) -> Item {
     keywords.extend(entry.generic_name);
     keywords.extend(entry.categories.iter().cloned());
     keywords.push(executable);
+    let secondary_actions = DesktopAppInfo::new(&id)
+        .map(|desktop| {
+            desktop
+                .list_actions()
+                .into_iter()
+                .map(|name| ItemAction {
+                    id: format!("{id}.action.{name}"),
+                    label: desktop.action_name(&name).to_string(),
+                    action: Action::DesktopLaunch {
+                        app: desktop.clone(),
+                        name: name.to_string(),
+                    },
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     Item {
+        provider: "applications".into(),
+        provider_title: "Applications".into(),
+        provider_priority: 10,
         icon: app.icon(),
         category: category(&entry.categories),
         action: Action::Launch { app },
@@ -66,6 +86,7 @@ fn item(app: gio::AppInfo) -> Item {
         subtitle,
         kind: Kind::Application,
         keywords,
+        secondary_actions,
     }
 }
 

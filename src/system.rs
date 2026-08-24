@@ -57,6 +57,7 @@ pub fn executable_on_path(program: &str) -> bool {
 pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
+    pub working_directory: Option<String>,
     pub timeout: Duration,
     pub output_limit: usize,
     /// Exit codes that mean success for this particular command, besides the
@@ -72,6 +73,7 @@ impl CommandSpec {
         Self {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
+            working_directory: None,
             timeout: Duration::from_secs(3),
             output_limit: 16 * 1024,
             accepted_exit_codes: vec![0],
@@ -85,6 +87,11 @@ impl CommandSpec {
 
     pub fn with_output_limit(mut self, limit: usize) -> Self {
         self.output_limit = limit;
+        self
+    }
+
+    pub fn with_working_directory(mut self, directory: impl Into<String>) -> Self {
+        self.working_directory = Some(directory.into());
         self
     }
 
@@ -127,8 +134,12 @@ pub fn run(spec: &CommandSpec, cancellation: &CancellationToken) -> ProcessResul
         return Err(ProcessError::Cancelled);
     }
 
-    let mut child = Command::new(&spec.program)
-        .args(&spec.args)
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    if let Some(directory) = &spec.working_directory {
+        command.current_dir(directory);
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

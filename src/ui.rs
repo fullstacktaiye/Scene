@@ -3,8 +3,8 @@
 //! This module renders what `search` produced and reports what `actions`
 //! returned. It does not decide either.
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::cell::{Cell, OnceCell, RefCell};
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use gtk::accessible::{Property, State};
@@ -36,6 +36,8 @@ pub struct Launcher {
     stack: gtk::Stack,
     entry: gtk::Entry,
     list: gtk::ListBox,
+    action_popover: gtk::Popover,
+    action_list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
     empty: gtk::Box,
     empty_title: gtk::Label,
@@ -49,6 +51,13 @@ pub struct Launcher {
     shortcut_recorder: gtk::Button,
     copilot_test: gtk::Button,
     settings_feedback: gtk::Label,
+    provider_list: gtk::Box,
+    history_switch: gtk::Switch,
+    clear_history: gtk::Button,
+    command_history_switch: gtk::Switch,
+    clear_command_history: gtk::Button,
+    file_content_switch: gtk::Switch,
+    autostart_switch: gtk::Switch,
 
     items: RefCell<Vec<Item>>,
     /// The providers' answers to the current query. They exist only while the
@@ -60,6 +69,8 @@ pub struct Launcher {
     hits: RefCell<Vec<usize>>,
     rows: RefCell<Vec<gtk::ListBoxRow>>,
     selected: Cell<usize>,
+    action_selected: Cell<usize>,
+    action_choices: RefCell<Vec<(String, Action)>>,
     /// The action selected for confirmation is frozen here, with the result id
     /// it came from. Query changes and selection movement cannot substitute a
     /// different mutation on Enter.
@@ -70,10 +81,14 @@ pub struct Launcher {
     /// What the user has chosen before, which adjusts ranking within a group.
     /// `search` decides how much it counts for; this module only records it.
     history: RefCell<History>,
+    config: RefCell<integrations::Config>,
+    query_generation: Cell<u64>,
+    self_weak: OnceCell<Weak<Launcher>>,
 }
 
 impl Launcher {
     pub fn build(app: &gtk::Application) -> Rc<Self> {
+        let config = integrations::Config::load();
         let entry = gtk::Entry::builder()
             .placeholder_text("Search Scene…")
             .hexpand(true)
@@ -91,6 +106,16 @@ impl Launcher {
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(["results"])
             .build();
+        let action_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["action-menu"])
+            .build();
+        let action_popover = gtk::Popover::builder()
+            .child(&action_list)
+            .autohide(false)
+            .has_arrow(false)
+            .build();
+        action_popover.set_parent(&list);
 
         let scroller = gtk::ScrolledWindow::builder()
             .child(&list)
@@ -212,6 +237,51 @@ impl Launcher {
             "Scene reports support only after an event or desktop action is observed. It never infers hardware from F23 capability bits.",
         ));
         settings_body.append(&copilot_test);
+        let provider_list = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        settings_body.append(&settings_group("Search providers", &provider_list));
+
+        let history_switch = gtk::Switch::builder()
+            .active(config.history_enabled)
+            .valign(gtk::Align::Center)
+            .build();
+        let clear_history = gtk::Button::with_label("Clear result history");
+        let command_history_switch = gtk::Switch::builder()
+            .active(config.command_history_enabled)
+            .valign(gtk::Align::Center)
+            .build();
+        let clear_command_history = gtk::Button::with_label("Clear command history");
+        let file_content_switch = gtk::Switch::builder()
+            .active(config.file_content_enabled)
+            .valign(gtk::Align::Center)
+            .build();
+        let autostart_switch = gtk::Switch::builder()
+            .active(platform::autostart_enabled())
+            .valign(gtk::Align::Center)
+            .build();
+        let privacy = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        privacy.append(&toggle_row(
+            "Recent and frequent ranking",
+            "Stored locally and clearable at any time.",
+            &history_switch,
+        ));
+        privacy.append(&clear_command_history);
+        privacy.append(&clear_history);
+        privacy.append(&toggle_row(
+            "Command history",
+            "Off by default because commands can contain private data.",
+            &command_history_switch,
+        ));
+        privacy.append(&toggle_row(
+            "File-content search",
+            "Uses the existing Baloo index; Scene never builds another index.",
+            &file_content_switch,
+        ));
+        privacy.append(&toggle_row(
+            "Start Scene at login",
+            "Keeps the single launcher instance resident and warm.",
+            &autostart_switch,
+        ));
+        settings_body.append(&settings_group("Privacy and startup", &privacy));
         settings_body.append(&settings_feedback);
 
         let settings_surface = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -221,7 +291,14 @@ impl Launcher {
         let settings_rule = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         settings_rule.add_css_class("rule");
         settings_surface.append(&settings_rule);
-        settings_surface.append(&settings_body);
+        let settings_scroller = gtk::ScrolledWindow::builder()
+            .child(&settings_body)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(600)
+            .build();
+        settings_surface.append(&settings_scroller);
         settings_surface.set_size_request(WIDTH, -1);
         apply_preferences(&settings_surface);
 
@@ -246,6 +323,8 @@ impl Launcher {
             stack,
             entry,
             list,
+            action_popover,
+            action_list,
             scroller,
             empty,
             empty_title,
@@ -259,20 +338,38 @@ impl Launcher {
             shortcut_recorder,
             copilot_test,
             settings_feedback,
+            provider_list,
+            history_switch,
+            clear_history,
+            command_history_switch,
+            clear_command_history,
+            file_content_switch,
+            autostart_switch,
             items: RefCell::new(search::index()),
             answers: RefCell::new(Vec::new()),
             _apps: gio::AppInfoMonitor::get(),
             hits: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             selected: Cell::new(0),
+            action_selected: Cell::new(0),
+            action_choices: RefCell::new(Vec::new()),
             pending_confirmation: RefCell::new(None),
             running: RefCell::new(None),
             running_in_settings: Cell::new(false),
             copilot_status: Cell::new(CopilotStatus::NotTested),
-            history: RefCell::new(History::load()),
+            history: RefCell::new(History::load_enabled(config.history_enabled)),
+            config: RefCell::new(config),
+            query_generation: Cell::new(0),
+            self_weak: OnceCell::new(),
         });
 
+        launcher
+            .self_weak
+            .set(Rc::downgrade(&launcher))
+            .expect("launcher weak reference is set once");
+
         launcher.connect_signals();
+        launcher.rebuild_provider_settings();
         let this = Rc::downgrade(&launcher);
         back.connect_clicked(move |_| {
             if let Some(launcher) = this.upgrade() {
@@ -313,6 +410,15 @@ impl Launcher {
         });
 
         let this = Rc::downgrade(self);
+        self.action_list.connect_row_activated(move |_, row| {
+            let Some(launcher) = this.upgrade() else {
+                return;
+            };
+            launcher.action_selected.set(row.index().max(0) as usize);
+            launcher.activate_action_choice();
+        });
+
+        let this = Rc::downgrade(self);
         self.shortcut_recorder.connect_clicked(move |_| {
             let Some(launcher) = this.upgrade() else {
                 return;
@@ -333,6 +439,85 @@ impl Launcher {
         self.copilot_test.connect_clicked(move |_| {
             if let Some(launcher) = this.upgrade() {
                 launcher.toggle_copilot_test();
+            }
+        });
+
+        let this = Rc::downgrade(self);
+        self.history_switch.connect_state_set(move |_, enabled| {
+            if let Some(launcher) = this.upgrade() {
+                launcher.config.borrow_mut().history_enabled = enabled;
+                launcher.history.borrow_mut().set_enabled(enabled);
+                launcher.save_settings();
+                launcher.refresh();
+            }
+            glib::Propagation::Proceed
+        });
+
+        let this = Rc::downgrade(self);
+        self.clear_history.connect_clicked(move |_| {
+            if let Some(launcher) = this.upgrade() {
+                launcher.history.borrow_mut().clear();
+                launcher.set_settings_feedback("Result history cleared.", "ok");
+                launcher.refresh();
+            }
+        });
+
+        let this = Rc::downgrade(self);
+        self.command_history_switch
+            .connect_state_set(move |_, enabled| {
+                if let Some(launcher) = this.upgrade() {
+                    launcher.config.borrow_mut().command_history_enabled = enabled;
+                    launcher.save_settings();
+                }
+                glib::Propagation::Proceed
+            });
+
+        let this = Rc::downgrade(self);
+        self.clear_command_history.connect_clicked(move |_| {
+            let Some(launcher) = this.upgrade() else {
+                return;
+            };
+            match actions::clear_command_history() {
+                Ok(()) => launcher.set_settings_feedback("Command history cleared.", "ok"),
+                Err(error) => launcher.set_settings_feedback(
+                    &format!("Could not clear command history: {error}"),
+                    "error",
+                ),
+            }
+        });
+
+        let this = Rc::downgrade(self);
+        self.file_content_switch
+            .connect_state_set(move |_, enabled| {
+                if let Some(launcher) = this.upgrade() {
+                    launcher.config.borrow_mut().file_content_enabled = enabled;
+                    launcher.save_settings();
+                    launcher.refresh();
+                }
+                glib::Propagation::Proceed
+            });
+
+        let this = Rc::downgrade(self);
+        self.autostart_switch.connect_state_set(move |_, enabled| {
+            let Some(launcher) = this.upgrade() else {
+                return glib::Propagation::Stop;
+            };
+            match platform::set_autostart(enabled) {
+                Ok(()) => {
+                    launcher.set_settings_feedback(
+                        if enabled {
+                            "Scene will start in the background at login."
+                        } else {
+                            "Scene will no longer start automatically."
+                        },
+                        "ok",
+                    );
+                    glib::Propagation::Proceed
+                }
+                Err(error) => {
+                    launcher.set_settings_feedback(&error, "error");
+                    glib::Propagation::Stop
+                }
             }
         });
 
@@ -400,6 +585,20 @@ impl Launcher {
                 return glib::Propagation::Stop;
             }
             return glib::Propagation::Proceed;
+        }
+        if self.action_popover.is_visible() {
+            match key {
+                gdk::Key::Down => self.move_action_selection(1),
+                gdk::Key::Up => self.move_action_selection(-1),
+                gdk::Key::Return | gdk::Key::KP_Enter => self.activate_action_choice(),
+                gdk::Key::Escape => self.close_action_menu(),
+                _ => return glib::Propagation::Proceed,
+            }
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::k && state.contains(gdk::ModifierType::CONTROL_MASK) {
+            self.open_action_menu();
+            return glib::Propagation::Stop;
         }
         match key {
             gdk::Key::Down => self.move_selection(1),
@@ -520,34 +719,153 @@ impl Launcher {
         self.settings_feedback.set_visible(true);
     }
 
+    fn save_settings(&self) {
+        if let Err(error) = self.config.borrow().save() {
+            self.set_settings_feedback(&format!("Could not save settings: {error}"), "error");
+        }
+    }
+
+    fn reload_index(&self) {
+        *self.items.borrow_mut() = search::index();
+        self.refresh();
+    }
+
+    fn rebuild_provider_settings(self: &Rc<Self>) {
+        while let Some(child) = self.provider_list.first_child() {
+            self.provider_list.remove(&child);
+        }
+        let metadata = integrations::provider_metadata();
+        for id in self.config.borrow().ordered_provider_ids() {
+            let Some(provider) = metadata.iter().find(|provider| provider.id == id) else {
+                continue;
+            };
+            let enabled = self.config.borrow().provider_enabled(provider.id);
+            let toggle = gtk::Switch::builder()
+                .active(enabled)
+                .valign(gtk::Align::Center)
+                .build();
+            let up = gtk::Button::builder()
+                .icon_name("go-up-symbolic")
+                .tooltip_text(format!("Move {} earlier", provider.title))
+                .build();
+            let down = gtk::Button::builder()
+                .icon_name("go-down-symbolic")
+                .tooltip_text(format!("Move {} later", provider.title))
+                .build();
+            let controls = row_box(4);
+            controls.append(&up);
+            controls.append(&down);
+            controls.append(&toggle);
+            let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
+            let title = gtk::Label::builder()
+                .label(provider.title)
+                .xalign(0.0)
+                .build();
+            title.add_css_class("settings-value");
+            let description = gtk::Label::builder()
+                .label(provider.description)
+                .xalign(0.0)
+                .wrap(true)
+                .build();
+            description.add_css_class("settings-explanation");
+            text.append(&title);
+            text.append(&description);
+            let row = row_box(8);
+            row.add_css_class("provider-setting");
+            row.append(&text);
+            row.append(&controls);
+            self.provider_list.append(&row);
+
+            let provider_id = provider.id.to_string();
+            let this = Rc::downgrade(self);
+            toggle.connect_state_set(move |_, enabled| {
+                if let Some(launcher) = this.upgrade() {
+                    launcher
+                        .config
+                        .borrow_mut()
+                        .set_provider_enabled(&provider_id, enabled);
+                    launcher.save_settings();
+                    launcher.reload_index();
+                }
+                glib::Propagation::Proceed
+            });
+
+            let provider_id = provider.id.to_string();
+            let this = Rc::downgrade(self);
+            up.connect_clicked(move |_| {
+                if let Some(launcher) = this.upgrade() {
+                    launcher.config.borrow_mut().move_provider(&provider_id, -1);
+                    launcher.save_settings();
+                    launcher.reload_index();
+                    launcher.rebuild_provider_settings();
+                }
+            });
+
+            let provider_id = provider.id.to_string();
+            let this = Rc::downgrade(self);
+            down.connect_clicked(move |_| {
+                if let Some(launcher) = this.upgrade() {
+                    launcher.config.borrow_mut().move_provider(&provider_id, 1);
+                    launcher.save_settings();
+                    launcher.reload_index();
+                    launcher.rebuild_provider_settings();
+                }
+            });
+        }
+    }
+
     fn refresh(&self) {
         let query = self.entry.text().to_string();
         *self.answers.borrow_mut() = integrations::answers(&query);
+        let generation = self.query_generation.get().wrapping_add(1);
+        self.query_generation.set(generation);
+        let weak = self
+            .self_weak
+            .get()
+            .expect("launcher weak reference was initialized")
+            .clone();
+        let callback_query = query.clone();
+        integrations::answers_async(&query, move |items| {
+            let Some(launcher) = weak.upgrade() else {
+                return;
+            };
+            if launcher.query_generation.get() != generation
+                || launcher.entry.text().as_str() != callback_query
+            {
+                return;
+            }
+            launcher.answers.borrow_mut().extend(items);
+            launcher.render_results(&callback_query);
+        });
+        self.render_results(&query);
+    }
 
+    fn render_results(&self, query: &str) {
         let answers = self.answers.borrow();
         let items = self.items.borrow();
         // One ranked list over both sources, so a query answer is ordered by
         // the same rules as everything else rather than pinned by the UI.
         let visible: Vec<&Item> = answers.iter().chain(items.iter()).collect();
-        let hits = search::search(&query, &visible, &self.history.borrow());
+        let hits = search::search(query, &visible, &self.history.borrow());
 
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
+        while let Some(row) = self.list.row_at_index(0) {
+            self.list.remove(&row);
         }
         let mut rows = Vec::with_capacity(hits.len());
-        let mut group = None;
+        let mut group: Option<&str> = None;
         // A group is only ever trimmed in the resting state, so that is the
         // only time a heading has a count to report.
         let resting = query.trim().is_empty();
 
         for &index in &hits {
             let item = visible[index];
-            if group != Some(item.kind) {
-                group = Some(item.kind);
+            if group != Some(item.provider.as_str()) {
+                group = Some(item.provider.as_str());
                 let trimmed = resting
-                    .then(|| withheld(item.kind, &hits, &visible))
+                    .then(|| withheld(&item.provider, &hits, &visible))
                     .flatten();
-                self.list.append(&section_row(item.kind, trimmed));
+                self.list
+                    .append(&section_row(&item.provider_title, trimmed));
             }
             let row = result_row(item);
             self.list.append(&row);
@@ -645,15 +963,92 @@ impl Launcher {
             return;
         };
         if actions::requires_confirmation(&action) {
-            let Action::Process { action: process } = &action else {
-                unreachable!()
-            };
-            let text = actions::confirmation_text(process);
+            let text = actions::action_confirmation_text(&action)
+                .expect("an action requiring confirmation names its consequence");
             *self.pending_confirmation.borrow_mut() = Some((id, action));
             self.show_status(&Outcome::AwaitingConfirmation(text));
             return;
         }
         self.start_action(&id, &action, false);
+    }
+
+    fn open_action_menu(&self) {
+        if self.running.borrow().is_some() || self.pending_confirmation.borrow().is_some() {
+            return;
+        }
+        let index = {
+            let hits = self.hits.borrow();
+            let Some(index) = hits.get(self.selected.get()) else {
+                return;
+            };
+            *index
+        };
+        let Some((id, primary, secondary)) = self.chosen_actions(index) else {
+            return;
+        };
+        while let Some(child) = self.action_list.first_child() {
+            self.action_list.remove(&child);
+        }
+        let mut choices = vec![(id, primary.clone())];
+        let primary_row = action_row(&format!("Default — {}", action_label(&primary)));
+        self.action_list.append(&primary_row);
+        for action in secondary {
+            self.action_list.append(&action_row(&action.label));
+            choices.push((action.id, action.action));
+        }
+        *self.action_choices.borrow_mut() = choices;
+        self.action_selected.set(0);
+        self.apply_action_selection();
+        self.action_popover.popup();
+    }
+
+    fn close_action_menu(&self) {
+        self.action_popover.popdown();
+        self.action_choices.borrow_mut().clear();
+        self.entry.grab_focus();
+    }
+
+    fn move_action_selection(&self, delta: i32) {
+        let count = self.action_choices.borrow().len();
+        if count == 0 {
+            return;
+        }
+        self.action_selected
+            .set((self.action_selected.get() as i32 + delta).rem_euclid(count as i32) as usize);
+        self.apply_action_selection();
+    }
+
+    fn apply_action_selection(&self) {
+        let selected = self.action_selected.get();
+        let mut child = self.action_list.first_child();
+        let mut position = 0;
+        while let Some(row) = child {
+            if position == selected {
+                row.add_css_class("selected");
+            } else {
+                row.remove_css_class("selected");
+            }
+            child = row.next_sibling();
+            position += 1;
+        }
+    }
+
+    fn activate_action_choice(self: &Rc<Self>) {
+        let choice = self
+            .action_choices
+            .borrow()
+            .get(self.action_selected.get())
+            .cloned();
+        self.close_action_menu();
+        let Some((id, action)) = choice else { return };
+        if actions::requires_confirmation(&action) {
+            let text = actions::action_confirmation_text(&action)
+                .expect("an action requiring confirmation names its consequence");
+            *self.pending_confirmation.borrow_mut() = Some((id, action));
+            self.show_status(&Outcome::AwaitingConfirmation(text));
+        } else {
+            self.start_action(&id, &action, false);
+        }
     }
 
     /// Resolve a ranked position back to its item's id and action. Answers are
@@ -671,6 +1066,27 @@ impl Launcher {
             .map(|item| (item.id.clone(), item.action.clone()))
     }
 
+    fn chosen_actions(&self, index: usize) -> Option<(String, Action, Vec<search::ItemAction>)> {
+        let answers = self.answers.borrow();
+        let item = if let Some(item) = answers.get(index) {
+            item
+        } else {
+            let index = index.checked_sub(answers.len())?;
+            let items = self.items.borrow();
+            let item = items.get(index)?;
+            return Some((
+                item.id.clone(),
+                item.action.clone(),
+                item.secondary_actions.clone(),
+            ));
+        };
+        Some((
+            item.id.clone(),
+            item.action.clone(),
+            item.secondary_actions.clone(),
+        ))
+    }
+
     fn start_action(self: &Rc<Self>, id: &str, action: &Action, confirmed: bool) {
         // Recorded when the action actually starts, so a confirmation the user
         // backed out of is not counted as a use.
@@ -685,6 +1101,8 @@ impl Launcher {
             StartedAction::Running(running) => {
                 let title = match action {
                     Action::Process { action } => action.title.clone(),
+                    Action::Dbus { action } => action.title.clone(),
+                    Action::Signal { action } => action.title.clone(),
                     Action::Open { target } => format!("Opening {target}"),
                     _ => "Action".into(),
                 };
@@ -750,6 +1168,10 @@ impl Launcher {
 
     /// Escape cancels the query first, and only then closes the launcher.
     fn dismiss(&self) {
+        if self.action_popover.is_visible() {
+            self.close_action_menu();
+            return;
+        }
         // A watched launch is not cancellable, so Escape falls through to
         // closing the launcher rather than killing what the user just started.
         let cancelling = self
@@ -843,6 +1265,33 @@ fn settings_section(title: &str, value: &gtk::Label, explanation: &str) -> gtk::
     section
 }
 
+fn settings_group(title: &str, content: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let group = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let title = gtk::Label::builder().label(title).xalign(0.0).build();
+    title.add_css_class("settings-label");
+    group.append(&title);
+    group.append(content);
+    group
+}
+
+fn toggle_row(title: &str, explanation: &str, toggle: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    let title = gtk::Label::builder().label(title).xalign(0.0).build();
+    title.add_css_class("settings-value");
+    let explanation = gtk::Label::builder()
+        .label(explanation)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    explanation.add_css_class("settings-explanation");
+    text.append(&title);
+    text.append(&explanation);
+    let row = row_box(8);
+    row.append(&text);
+    row.append(toggle);
+    row
+}
+
 fn icon(name: &str, class: &str) -> gtk::Image {
     let image = gtk::Image::from_icon_name(name);
     image.add_css_class(class);
@@ -856,20 +1305,53 @@ fn kbd(text: &str) -> gtk::Label {
     label
 }
 
+fn action_row(label: &str) -> gtk::ListBoxRow {
+    let label = gtk::Label::builder()
+        .label(label)
+        .xalign(0.0)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    gtk::ListBoxRow::builder()
+        .child(&label)
+        .activatable(true)
+        .selectable(false)
+        .build()
+}
+
+fn action_label(action: &Action) -> String {
+    match action {
+        Action::Launch { app } => format!("Open {}", app.display_name()),
+        Action::DesktopLaunch { app, .. } => format!("Open {}", app.display_name()),
+        Action::Open { target } => format!("Open {target}"),
+        Action::Process { action } => action.title.clone(),
+        Action::Dbus { action } => action.title.clone(),
+        Action::Signal { action } => action.title.clone(),
+        Action::Copy { label, .. } => format!("Copy {label}"),
+        Action::Message { .. } => "Show details".into(),
+        Action::ShowSettings => "Open settings".into(),
+        Action::Quit => "Quit Scene".into(),
+    }
+}
+
 /// How much of one group the list is showing, when it is not showing all of
 /// it. This counts what was rendered against what was there; the rule that
 /// decided it lives in `search`.
-fn withheld(kind: search::Kind, hits: &[usize], visible: &[&Item]) -> Option<(usize, usize)> {
+fn withheld(provider: &str, hits: &[usize], visible: &[&Item]) -> Option<(usize, usize)> {
     let shown = hits
         .iter()
-        .filter(|&&index| visible[index].kind == kind)
+        .filter(|&&index| visible[index].provider == provider)
         .count();
-    let total = visible.iter().filter(|item| item.kind == kind).count();
+    let total = visible
+        .iter()
+        .filter(|item| item.provider == provider)
+        .count();
     (total > shown).then_some((shown, total))
 }
 
-fn section_row(kind: search::Kind, trimmed: Option<(usize, usize)>) -> gtk::ListBoxRow {
-    let heading = kind.heading();
+fn section_row(heading: &str, trimmed: Option<(usize, usize)>) -> gtk::ListBoxRow {
     let label = gtk::Label::new(Some(heading));
     label.set_xalign(0.0);
     label.add_css_class("section");
@@ -910,7 +1392,33 @@ fn result_row(item: &Item) -> gtk::ListBoxRow {
     // The image is the tile. A box would hand its only child the child's
     // natural width and pack it against the left edge, whereas an image
     // centres its icon in whatever space CSS gives it.
-    let tile = resolved_icon(item);
+    let tile: gtk::Widget = if item.provider == "colors" {
+        match gdk::RGBA::parse(&item.title) {
+            Ok(color) => {
+                let swatch = gtk::DrawingArea::new();
+                swatch.set_content_width(34);
+                swatch.set_content_height(34);
+                swatch.add_css_class("color-swatch");
+                swatch.update_property(&[Property::Label(
+                    format!("Color swatch {}", item.title).as_str(),
+                )]);
+                swatch.set_draw_func(move |_, context, width, height| {
+                    context.set_source_rgba(
+                        f64::from(color.red()),
+                        f64::from(color.green()),
+                        f64::from(color.blue()),
+                        f64::from(color.alpha()),
+                    );
+                    context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+                    let _ = context.fill();
+                });
+                swatch.upcast()
+            }
+            Err(_) => resolved_icon(item).upcast(),
+        }
+    } else {
+        resolved_icon(item).upcast()
+    };
     tile.set_css_classes(&["tile", item.kind.slug()]);
     tile.set_halign(gtk::Align::Center);
     tile.set_valign(gtk::Align::Center);
@@ -1004,6 +1512,9 @@ mod tests {
     fn item(id: &str, title: &str, keyword: &str, action: Action) -> Item {
         Item {
             id: id.into(),
+            provider: "scene".into(),
+            provider_title: "Scene".into(),
+            provider_priority: 90,
             title: title.into(),
             subtitle: "for the smoke harness".into(),
             kind: Kind::Scene,
@@ -1011,6 +1522,7 @@ mod tests {
             category: None,
             keywords: vec![keyword.into()],
             action,
+            secondary_actions: Vec::new(),
         }
     }
 
@@ -1085,6 +1597,17 @@ mod tests {
     /// initialised it, and the test harness gives every test its own thread.
     #[test]
     fn the_keyboard_only_path_runs_end_to_end() {
+        // GTK initialization races with otherwise thread-safe GIO unit tests
+        // when libtest runs this in its shared process. Keep the full harness
+        // opt-in so CI invokes it in its own test process.
+        if std::env::var_os("SCENE_UI_TEST").is_none() {
+            eprintln!("skipping the UI smoke suite: set SCENE_UI_TEST=1 to run it in isolation");
+            return;
+        }
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
+            eprintln!("skipping the UI smoke suite: no display environment is available");
+            return;
+        }
         if gtk::init().is_err() {
             eprintln!("skipping the UI smoke suite: no display to open");
             return;
@@ -1112,6 +1635,17 @@ mod tests {
         ));
         items.push(mutation());
         items.push(slow(&program.to_string_lossy()));
+        let about = items
+            .iter_mut()
+            .find(|item| item.id == "scene.about")
+            .expect("fixture has an About result");
+        about.secondary_actions.push(crate::search::ItemAction {
+            id: "scene.about.secondary".into(),
+            label: "Report secondary action".into(),
+            action: Action::Message {
+                text: "secondary action reached".into(),
+            },
+        });
         // Enough applications to pass the resting limit, so the harness covers
         // the trimmed list and its heading as well as the full one.
         for index in 0..8 {
@@ -1138,11 +1672,15 @@ mod tests {
         // The harness must never write to the user's own history file, and a
         // stated ranking is what makes the positions below meaningful.
         *launcher.history.borrow_mut() = History::disabled();
-        launcher.replace_items(items);
+        launcher.replace_items(items.clone());
 
         // Activation: a focused search field and the whole index.
         launcher.present();
         pump(&context);
+        // GAppInfoMonitor can emit its initial host catalogue change while
+        // the loop is first pumped. Restore the hermetic fixture after that
+        // one desktop-driven event.
+        launcher.replace_items(items);
         assert!(launcher.window.is_visible(), "the launcher did not appear");
         // A GtkEntry delegates its caret to an internal GtkText, so the focus
         // lands inside the search field rather than on it.
@@ -1193,8 +1731,17 @@ mod tests {
         assert!(launcher.window.is_visible());
         assert!(!launcher.status.is_visible());
 
-        // Enter runs the selected result and reports it in the footer.
+        // Ctrl+K exposes every action and the secondary action is keyboard-only
+        // reachable through the same execution path.
         launcher.entry.set_text("about");
+        launcher.key_event(gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+        assert!(launcher.action_popover.is_visible());
+        assert_eq!(launcher.action_choices.borrow().len(), 2);
+        launcher.key(gdk::Key::Down);
+        launcher.key(gdk::Key::Return);
+        assert!(status(&launcher).contains("secondary action reached"));
+
+        // Enter runs the selected result's primary action and reports it.
         launcher.key(gdk::Key::Return);
         assert!(launcher.status.is_visible());
         assert!(

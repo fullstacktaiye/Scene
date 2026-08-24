@@ -3,8 +3,9 @@
 A fast, keyboard-first Linux launcher. See [`PRODUCT_PLAN.md`](PRODUCT_PLAN.md)
 for what Scene is meant to become.
 
-This repository currently contains **Milestone 5 — global activation and
-Copilot-key support**.
+This repository contains the code-complete portion of **Milestone 6 — KDE
+replacement foundation**. Its final acceptance gate is the documented
+one-week KRunner-unbound field trial.
 
 ## Build and run
 
@@ -55,13 +56,14 @@ window. It never leaves a competing launcher process or window.
 | Enter | Runs the selected result |
 | Escape | Clears the query; cancels a running action; withdraws a confirmation; on an empty query, hides the launcher |
 | Click | Selects and runs, through the same path as Enter |
+| Ctrl+K | Opens the selected result's primary and secondary actions |
 | Ctrl+, | Opens shortcut and Copilot-key settings |
 | Ctrl+Q | Quits Scene |
 
-Results you use often, and used recently, rise within their group. Set
-`SCENE_HISTORY=off` to rank on the deterministic baseline alone; the history
-itself lives in `$XDG_STATE_HOME/scene/history` and can be deleted at any
-time.
+Results you use often, and used recently, rise within their provider group.
+Scene Settings can disable or clear that history, enable and reorder providers,
+opt into separate command history or Baloo content search, and configure
+user-level autostart.
 
 Before you type anything, the applications group shows only its top five —
 the ones you actually use, then alphabetical order to fill. There are 81
@@ -70,16 +72,23 @@ buries every other group. The heading says `5 of 81` so the short list is
 never mistaken for the whole set, and typing searches all of them. Every other
 group is a small catalogue Scene itself owns, so it shows in full.
 
-Three keywords reach the package adapter for this machine:
+Useful explicit query forms include:
 
 | Query | Result |
 | --- | --- |
-| `pkg NAME` | Search for the package, show its metadata, say whether it is installed |
+| `= EXPRESSION` / `convert VALUE UNIT to UNIT` | Calculate or convert locally |
+| `convert 10 USD to EUR` | Convert with cached ECB reference rates |
+| `time Europe/London` | Show a named timezone |
+| `color VALUE` / `char U+1F680` | Convert a colour or find a character |
+| `run PROGRAM ARGUMENT…` | Preview and confirm a bounded, shell-free command |
+| `file TERM` | Search Baloo by filename (content search is opt-in) |
+| `process TERM` | Find a current-user process and offer confirmed signals |
+| `pkg NAME` | Show merged package metadata and installed/available state |
 | `install NAME` | Install it, behind an explicit confirmation |
 | `remove NAME` (or `uninstall NAME`) | Remove it, behind an explicit confirmation |
 
-Each row's subtitle is the exact command it will run, unexpanded, so you can
-read it before pressing Enter.
+See [`docs/krunner-migration.md`](docs/krunner-migration.md) for the gains,
+intentional omissions, shortcut hand-off, and field-trial procedure.
 
 ## Layout
 
@@ -106,6 +115,20 @@ data/
 
 `ui.rs` renders what `search` produced and reports what `actions` returned. It
 never decides either, so the styling can change without touching the logic.
+
+## Milestone 6 status
+
+- [x] Provider-labelled groups with persistent enable/disable and priority
+      controls.
+- [x] Inline actions, including declared desktop actions, reachable with
+      `Ctrl+K`.
+- [x] Optional, separately clearable command history and an explicit `run`
+      prefix with no shell expansion.
+- [x] Calculator/unit, currency, timezone, colour, character, web-shortcut,
+      window, Activity, Baloo, recent-file, KDE Places, bookmark, settings,
+      power/session, process, shortcut, and merged package providers.
+- [x] User-level autostart for a warm single-instance `--background` process.
+- [ ] Complete and record the one-week KRunner-unbound field trial.
 
 ## Milestone 5 status
 
@@ -174,12 +197,8 @@ quietly mean "done except for the parts nobody is tracking".
       `Started` — a different answer from `Succeeded` — and the built-in
       "What Scene Reports" result says so in words.
 
-### What is deliberately not here
-
-Support for a `.desktop` entry's declared additional actions ("New Private
-Window") stays deferred to **Milestone 6** and parity P6, where a result can
-carry several operations, rather than becoming a special case in application
-discovery.
+Declared `.desktop` actions such as “New Private Window” now use Milestone 6's
+shared typed inline-action model.
 
 ## Milestone 4 status
 

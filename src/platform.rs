@@ -10,6 +10,7 @@ use crate::actions::{Action, ProcessAction};
 use crate::system::{self, CommandSpec};
 
 pub const FALLBACK_SHORTCUT: &str = "Meta+Space";
+const AUTOSTART_NAME: &str = "dev.scene.Scene.desktop";
 
 const SHORTCUT_GROUP: &str = "services][dev.scene.Scene.desktop";
 const SHORTCUT_KEY: &str = "_launch";
@@ -26,6 +27,10 @@ pub enum DesktopSupport {
 }
 
 impl DesktopSupport {
+    pub fn detect() -> Self {
+        Inputs::from_environment().detect().desktop
+    }
+
     pub fn summary(&self) -> String {
         match self {
             Self::Kde { session_type } => format!("KDE Plasma ({session_type})"),
@@ -208,6 +213,63 @@ fn detect_recorder() -> Option<Recorder> {
         })
 }
 
+pub fn autostart_enabled() -> bool {
+    autostart_path().is_some_and(|path| path.is_file())
+}
+
+pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    let path = autostart_path()
+        .ok_or_else(|| "No XDG configuration directory is available.".to_string())?;
+    if !enabled {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("Could not disable startup: {error}")),
+        };
+    }
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("Could not locate the running Scene binary: {error}"))?;
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| "The Scene binary path is not valid UTF-8.".to_string())?;
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nVersion=1.5\nName=Scene\nComment=Keep Scene resident for fast activation\nExec={} --background\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
+        quote_exec(executable)?
+    );
+    let parent = path
+        .parent()
+        .ok_or_else(|| "The autostart path has no parent directory.".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create the autostart directory: {error}"))?;
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&temporary, entry)
+        .and_then(|()| std::fs::rename(&temporary, &path))
+        .map_err(|error| format!("Could not enable startup: {error}"))
+}
+
+fn autostart_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(base.join("autostart").join(AUTOSTART_NAME))
+}
+
+fn quote_exec(value: &str) -> Result<String, String> {
+    if value
+        .chars()
+        .any(|character| matches!(character, '\n' | '\r'))
+    {
+        return Err("The Scene binary path contains a line break.".into());
+    }
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('`', "\\`")
+        .replace('$', "\\$");
+    Ok(format!("\"{escaped}\""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +346,14 @@ mod tests {
         );
         assert_eq!(classify_copilot_key("F23", false, true), None);
         assert_eq!(classify_copilot_key("F22", true, true), None);
+    }
+
+    #[test]
+    fn autostart_exec_paths_are_desktop_entry_quoted() {
+        assert_eq!(
+            quote_exec(r#"/opt/Scene Builds/$current/scene"#).unwrap(),
+            r#""/opt/Scene Builds/\$current/scene""#
+        );
+        assert!(quote_exec("/opt/scene\nbinary").is_err());
     }
 }

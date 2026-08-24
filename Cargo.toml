@@ -6,4 +6,17 @@ description = "A fast, keyboard-first Linux launcher"
 license = "MIT"
 
 [dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+csscolorparser = "0.8"
+fend-core = "1.5"
+gio-unix = "0.22"
+glib = { version = "0.22", features = ["v2_76"] }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+nix = { version = "0.30", features = ["signal"] }
+percent-encoding = "2.3"
+quick-xml = "0.38"
+rusqlite = "0.37"
+serde_json = "1"
+unicode_names2 = "2"
+ureq = { version = "3", default-features = false, features = ["rustls"] }

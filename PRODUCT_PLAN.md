@@ -576,14 +576,19 @@ as providers grow.
 
 **Checklist:**
 
-- [ ] Multiple result categories.
-- [ ] Prioritized search providers.
-- [ ] Inline actions.
-- [ ] Command history.
-- [ ] Configurable providers.
-- [ ] Basic settings and independent provider enable/disable controls.
-- [ ] Startup integration.
+- [x] Multiple result categories.
+- [x] Prioritized search providers.
+- [x] Inline actions.
+- [x] Command history.
+- [x] Configurable providers.
+- [x] Basic settings and independent provider enable/disable controls.
+- [x] Startup integration.
 - [ ] Verify common KRunner replacement workflows manually on KDE Plasma.
+
+The implementation portion is complete. The final acceptance item deliberately
+remains open until the one-week, KRunner-unbound field trial described in
+[`docs/krunner-parity.md`](docs/krunner-parity.md) is finished and its gaps are
+recorded. Code completion is not being substituted for daily-driver evidence.
 
 ### Milestone 7 — Stage Manager prototype
 

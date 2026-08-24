@@ -16,10 +16,26 @@ use gtk::{gio, glib};
 const APP_ID: &str = "dev.scene.Scene";
 
 fn main() -> glib::ExitCode {
-    let app = gtk::Application::builder().application_id(APP_ID).build();
+    let background = std::env::args().any(|argument| argument == "--background");
+    let flags = if background {
+        gio::ApplicationFlags::IS_SERVICE
+    } else {
+        gio::ApplicationFlags::FLAGS_NONE
+    };
+    let app = gtk::Application::builder()
+        .application_id(APP_ID)
+        .flags(flags)
+        .build();
+    let background_hold: Rc<RefCell<Option<gio::ApplicationHoldGuard>>> =
+        Rc::new(RefCell::new(None));
 
-    app.connect_startup(|app| {
+    let hold = background_hold.clone();
+    app.connect_startup(move |app| {
         ui::load_styles();
+
+        if background {
+            *hold.borrow_mut() = Some(app.hold());
+        }
 
         let quit = gio::SimpleAction::new("quit", None);
         let weak = app.downgrade();
@@ -49,5 +65,5 @@ fn main() -> glib::ExitCode {
         window.activate();
     });
 
-    app.run()
+    app.run_with_args(&["scene"])
 }

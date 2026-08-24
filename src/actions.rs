@@ -11,6 +11,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use gio_unix::DesktopAppInfo;
+use glib::variant::ToVariant;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
@@ -41,6 +43,46 @@ pub struct Confirmation {
     pub target: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bus {
+    Session,
+    System,
+}
+
+#[derive(Clone, Debug)]
+pub enum DbusArguments {
+    None,
+    String(String),
+    Bool(bool),
+    StringPair(String, String),
+    DoubleU32(f64, u32),
+}
+
+#[derive(Clone, Debug)]
+pub struct DbusAction {
+    pub id: String,
+    pub title: String,
+    pub bus: Bus,
+    pub service: String,
+    pub path: String,
+    pub interface: String,
+    pub method: String,
+    pub arguments: DbusArguments,
+    pub confirmation: Option<Confirmation>,
+    /// False for fire-and-forget APIs such as KRunner's `Run`, which return
+    /// no execution result and therefore cannot honestly report success.
+    pub observable: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct SignalAction {
+    pub id: String,
+    pub title: String,
+    pub pid: u32,
+    pub signal: i32,
+    pub confirmation: Confirmation,
+}
+
 #[derive(Clone, Debug)]
 pub struct ProcessAction {
     pub id: String,
@@ -48,6 +90,7 @@ pub struct ProcessAction {
     pub spec: CommandSpec,
     pub policy: ExecutionPolicy,
     pub confirmation: Option<Confirmation>,
+    pub history_entry: Option<String>,
 }
 
 impl ProcessAction {
@@ -58,6 +101,7 @@ impl ProcessAction {
             spec,
             policy: ExecutionPolicy::ReadOnly,
             confirmation: None,
+            history_entry: None,
         }
     }
 
@@ -68,6 +112,7 @@ impl ProcessAction {
             spec,
             policy: ExecutionPolicy::Detached,
             confirmation: None,
+            history_entry: None,
         }
     }
 
@@ -86,7 +131,13 @@ impl ProcessAction {
             spec,
             policy: ExecutionPolicy::Mutating,
             confirmation: Some(confirmation),
+            history_entry: None,
         }
+    }
+
+    pub fn with_history(mut self, entry: impl Into<String>) -> Self {
+        self.history_entry = Some(entry.into());
+        self
     }
 }
 
@@ -96,10 +147,19 @@ pub enum Action {
     /// Start an installed application through the desktop's own application
     /// model, so startup notification and window activation work.
     Launch { app: gio::AppInfo },
+    /// Activate one of a desktop entry's declared additional operations.
+    DesktopLaunch { app: DesktopAppInfo, name: String },
     /// Hand a path or URI to the desktop's default handler.
     Open { target: String },
     /// A fixed process registered by an integration.
     Process { action: ProcessAction },
+    /// A typed desktop/system call. Service, object, interface, method and
+    /// argument shape are frozen before the result is displayed.
+    Dbus { action: DbusAction },
+    /// Signal one user-owned process after a PID-naming confirmation.
+    Signal { action: SignalAction },
+    /// Copy a provider answer without launching an external process.
+    Copy { text: String, label: String },
     /// Say something in the launcher without touching the system.
     Message { text: String },
     /// Navigate to Scene's own settings surface.
@@ -172,6 +232,13 @@ pub fn start(action: &Action) -> StartedAction {
             ))
         }
         Action::Process { action } => start_process(action),
+        Action::Dbus { action } if action.confirmation.is_some() => StartedAction::Immediate(
+            Outcome::Failed("This desktop action must be confirmed before it is started.".into()),
+        ),
+        Action::Dbus { action } => start_dbus(action),
+        Action::Signal { .. } => StartedAction::Immediate(Outcome::Failed(
+            "A process signal must be confirmed before it is sent.".into(),
+        )),
         Action::Open { target } => match open_action(target) {
             Ok(action) => start_process(&action),
             Err(outcome) => StartedAction::Immediate(outcome),
@@ -183,17 +250,18 @@ pub fn start(action: &Action) -> StartedAction {
 /// Start a previously confirmed mutating action. This is deliberately a
 /// separate call so only the confirmation interaction can cross that boundary.
 pub fn start_confirmed(action: &Action) -> StartedAction {
-    let Action::Process { action } = action else {
-        return StartedAction::Immediate(Outcome::Failed(
-            "Only a registered process action can require confirmation.".into(),
-        ));
-    };
-    if action.policy != ExecutionPolicy::Mutating || action.confirmation.is_none() {
-        return StartedAction::Immediate(Outcome::Failed(
+    match action {
+        Action::Process { action }
+            if action.policy == ExecutionPolicy::Mutating && action.confirmation.is_some() =>
+        {
+            start_process(action)
+        }
+        Action::Dbus { action } if action.confirmation.is_some() => start_dbus(action),
+        Action::Signal { action } => start_signal(action),
+        _ => StartedAction::Immediate(Outcome::Failed(
             "This action is not awaiting confirmation.".into(),
-        ));
+        )),
     }
-    start_process(action)
 }
 
 fn start_process(action: &ProcessAction) -> StartedAction {
@@ -224,6 +292,11 @@ fn start_process(action: &ProcessAction) -> StartedAction {
 pub fn execute(action: &Action) -> Outcome {
     match action {
         Action::Launch { app } => launch(app),
+        Action::DesktopLaunch { app, name } => {
+            let context = gdk::Display::default().map(|display| display.app_launch_context());
+            app.launch_action(name, context.as_ref());
+            Outcome::Started(format!("Started {}", app.display_name()))
+        }
         Action::Open { target } => open(target),
         Action::Process { action } => {
             if action.policy == ExecutionPolicy::Mutating {
@@ -234,6 +307,23 @@ pub fn execute(action: &Action) -> Outcome {
                 run_process(action, &CancellationToken::new())
             }
         }
+        Action::Dbus { action } => {
+            if let Some(confirmation) = &action.confirmation {
+                Outcome::AwaitingConfirmation(confirmation_for(confirmation))
+            } else {
+                run_dbus(action)
+            }
+        }
+        Action::Signal { action } => {
+            Outcome::AwaitingConfirmation(confirmation_for(&action.confirmation))
+        }
+        Action::Copy { text, label } => match gdk::Display::default() {
+            Some(display) => {
+                display.clipboard().set_text(text);
+                Outcome::Reported(format!("Copied {label}"))
+            }
+            None => Outcome::Unavailable("No desktop clipboard is available.".into()),
+        },
         Action::Message { text } => Outcome::Reported(text.clone()),
         Action::ShowSettings => Outcome::ShowSettings,
         Action::Quit => Outcome::Quit,
@@ -242,6 +332,19 @@ pub fn execute(action: &Action) -> Outcome {
 
 pub fn requires_confirmation(action: &Action) -> bool {
     matches!(action, Action::Process { action } if action.policy == ExecutionPolicy::Mutating && action.confirmation.is_some())
+        || matches!(action, Action::Dbus { action } if action.confirmation.is_some())
+        || matches!(action, Action::Signal { .. })
+}
+
+pub fn action_confirmation_text(action: &Action) -> Option<String> {
+    match action {
+        Action::Process { action } if action.confirmation.is_some() => {
+            Some(confirmation_text(action))
+        }
+        Action::Dbus { action } => action.confirmation.as_ref().map(confirmation_for),
+        Action::Signal { action } => Some(confirmation_for(&action.confirmation)),
+        _ => None,
+    }
 }
 
 pub fn confirmation_text(action: &ProcessAction) -> String {
@@ -249,10 +352,115 @@ pub fn confirmation_text(action: &ProcessAction) -> String {
         .confirmation
         .as_ref()
         .expect("mutating action requires confirmation metadata");
+    confirmation_for(confirmation)
+}
+
+fn confirmation_for(confirmation: &Confirmation) -> String {
     format!(
         "{} Target: {}. Press Enter to confirm or Escape to cancel.",
         confirmation.summary, confirmation.target
     )
+}
+
+fn start_dbus(action: &DbusAction) -> StartedAction {
+    let (sender, receiver) = mpsc::channel();
+    let action = action.clone();
+    thread::spawn(move || {
+        let _ = sender.send(run_dbus(&action));
+    });
+    StartedAction::Running(RunningAction {
+        cancellation: CancellationToken::new(),
+        receiver,
+        cancellable: false,
+    })
+}
+
+fn run_dbus(action: &DbusAction) -> Outcome {
+    debug_assert!(
+        !action.id.is_empty(),
+        "D-Bus actions require stable identifiers"
+    );
+    let bus = match action.bus {
+        Bus::Session => gio::BusType::Session,
+        Bus::System => gio::BusType::System,
+    };
+    let connection = match gio::bus_get_sync(bus, gio::Cancellable::NONE) {
+        Ok(connection) => connection,
+        Err(error) => {
+            return Outcome::Unavailable(format!("{} is unavailable: {error}", action.title));
+        }
+    };
+    let parameters = match &action.arguments {
+        DbusArguments::None => None,
+        DbusArguments::String(value) => Some((value.as_str(),).to_variant()),
+        DbusArguments::Bool(value) => Some((*value,).to_variant()),
+        DbusArguments::StringPair(first, second) => {
+            Some((first.as_str(), second.as_str()).to_variant())
+        }
+        DbusArguments::DoubleU32(value, flags) => Some((*value, *flags).to_variant()),
+    };
+    match connection.call_sync(
+        Some(&action.service),
+        &action.path,
+        &action.interface,
+        &action.method,
+        parameters.as_ref(),
+        None,
+        gio::DBusCallFlags::NONE,
+        5_000,
+        gio::Cancellable::NONE,
+    ) {
+        Ok(_) if action.observable => Outcome::Succeeded(action.title.clone()),
+        Ok(_) => Outcome::Started(action.title.clone()),
+        Err(error) => Outcome::Failed(format!("{}: {error}", action.title)),
+    }
+}
+
+fn start_signal(action: &SignalAction) -> StartedAction {
+    debug_assert!(
+        !action.id.is_empty(),
+        "signal actions require stable identifiers"
+    );
+    let (sender, receiver) = mpsc::channel();
+    let action = action.clone();
+    thread::spawn(move || {
+        let pid = nix::unistd::Pid::from_raw(action.pid as i32);
+        let outcome = match nix::sys::signal::kill(
+            pid,
+            nix::sys::signal::Signal::try_from(action.signal).ok(),
+        ) {
+            Ok(()) => {
+                let started = Instant::now();
+                while started.elapsed() < Duration::from_millis(500) {
+                    if matches!(
+                        nix::sys::signal::kill(pid, None),
+                        Err(nix::errno::Errno::ESRCH)
+                    ) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                if matches!(
+                    nix::sys::signal::kill(pid, None),
+                    Err(nix::errno::Errno::ESRCH)
+                ) {
+                    Outcome::Succeeded(format!("PID {} stopped", action.pid))
+                } else {
+                    Outcome::Reported(format!(
+                        "Signal {} was delivered to PID {}, which is still present",
+                        action.signal, action.pid
+                    ))
+                }
+            }
+            Err(error) => Outcome::Failed(format!("Could not signal PID {}: {error}", action.pid)),
+        };
+        let _ = sender.send(outcome);
+    });
+    StartedAction::Running(RunningAction {
+        cancellation: CancellationToken::new(),
+        receiver,
+        cancellable: false,
+    })
 }
 
 fn run_process(action: &ProcessAction, cancellation: &CancellationToken) -> Outcome {
@@ -262,6 +470,9 @@ fn run_process(action: &ProcessAction, cancellation: &CancellationToken) -> Outc
     );
     match system::run(&action.spec, cancellation) {
         Ok(output) => {
+            if let Some(entry) = &action.history_entry {
+                record_command_history(entry);
+            }
             let mut text = output.stdout;
             if !output.stderr.is_empty() {
                 if !text.is_empty() {
@@ -310,6 +521,68 @@ fn run_process(action: &ProcessAction, cancellation: &CancellationToken) -> Outc
         }
         Err(ProcessError::Spawn(message)) => Outcome::Failed(message),
     }
+}
+
+pub fn command_history() -> Vec<String> {
+    let Some(path) = command_history_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut lines = text.lines();
+    if lines.next() != Some("scene-command-history 1") {
+        return Vec::new();
+    }
+    lines
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+pub fn clear_command_history() -> std::io::Result<()> {
+    let Some(path) = command_history_path() else {
+        return Ok(());
+    };
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn record_command_history(entry: &str) {
+    let Some(path) = command_history_path() else {
+        return;
+    };
+    let mut entries = command_history();
+    entries.retain(|existing| existing != entry);
+    entries.insert(0, entry.to_string());
+    entries.truncate(100);
+    let mut text = String::from("scene-command-history 1\n");
+    for entry in entries {
+        if let Ok(line) = serde_json::to_string(&entry) {
+            text.push_str(&line);
+            text.push('\n');
+        }
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    if std::fs::write(&temporary, text).is_ok() {
+        let _ = std::fs::rename(temporary, path);
+    }
+}
+
+fn command_history_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| std::path::PathBuf::from(home).join(".local").join("state"))
+        })?;
+    Some(base.join("scene").join("command-history"))
 }
 
 /// Starts a program without giving it input or inheriting output, then

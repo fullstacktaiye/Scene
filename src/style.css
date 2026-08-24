@@ -98,6 +98,12 @@ list.results > row {
   transition: background 90ms ease-out;
 }
 
+.color-swatch {
+  margin: 3px 13px 3px 3px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
 .result:hover {
   background: rgba(255, 255, 255, 0.05);
 }
@@ -283,6 +289,20 @@ list.results > row {
 .settings-feedback.ok { color: #6FDDA8; }
 .settings-feedback.warn { color: #FFC069; }
 .settings-feedback.error { color: #FF8E8E; }
+
+.action-menu {
+  min-width: 320px;
+  padding: 6px;
+  border-radius: 12px;
+  background: #20242B;
+}
+
+.action-menu row { border-radius: 8px; }
+
+.action-menu row.selected {
+  background: rgba(120, 174, 237, 0.18);
+  box-shadow: inset 3px 0 #78AEED;
+}
 
 /* ---------- preferences ---------- */
 
