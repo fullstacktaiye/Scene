@@ -69,5 +69,5 @@ fi
 
 echo
 echo "Done. Activate Scene with its configured shortcut."
-echo "The shortcut itself is a KDE setting, not Scene's: System Settings →"
-echo "Keyboard → Shortcuts → Applications → Scene."
+echo "The packaged fallback is Meta+Space. KDE owns the active binding: open"
+echo "Scene Settings with Ctrl+, to inspect it or launch KDE's recorder."

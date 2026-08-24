@@ -3,8 +3,8 @@
 A fast, keyboard-first Linux launcher. See [`PRODUCT_PLAN.md`](PRODUCT_PLAN.md)
 for what Scene is meant to become.
 
-This repository currently contains **Milestone 4.5 — overdue milestone
-items**.
+This repository currently contains **Milestone 5 — global activation and
+Copilot-key support**.
 
 ## Build and run
 
@@ -37,12 +37,14 @@ AppStream metainfo, validates both, and stops any resident instance. Run it
 after every change you want the shortcut to pick up: `cargo build --release`
 writes `target/release/scene`, which is *not* the binary a desktop entry runs,
 and a resident single-instance process would keep serving the old code
-regardless. Binding the shortcut itself is a KDE setting — System Settings →
-Keyboard → Shortcuts → Applications → Scene. Packaging proper is Milestone 8.
+regardless. The desktop entry proposes `Meta+Space` as the fallback shortcut.
+KDE remains the source of truth for the active binding and conflict handling:
+search for **Scene Settings** (or press `Ctrl+,`) to see what Scene observed
+and open KDE's native recorder. Packaging proper is Milestone 8.
 
-Scene registers as a single instance. Running `scene` again while it is already
-running re-presents the existing window with a cleared query, rather than
-opening a second one.
+Scene registers as a single instance. Activating it while hidden presents a
+focused launcher with a cleared query; activating it again hides the same
+window. It never leaves a competing launcher process or window.
 
 ## Using it
 
@@ -53,6 +55,7 @@ opening a second one.
 | Enter | Runs the selected result |
 | Escape | Clears the query; cancels a running action; withdraws a confirmation; on an empty query, hides the launcher |
 | Click | Selects and runs, through the same path as Enter |
+| Ctrl+, | Opens shortcut and Copilot-key settings |
 | Ctrl+Q | Quits Scene |
 
 Results you use often, and used recently, rise within their group. Set
@@ -87,6 +90,7 @@ src/
 ├── search.rs        matching, ranking, grouping, the built-in result set
 ├── integrations.rs  the provider registry and its contracts
 ├── packages.rs      distro capability adapters
+├── platform.rs      KDE shortcut and Copilot capability detection
 ├── actions.rs       typed actions and their outcomes
 ├── system.rs        executable discovery and bounded subprocesses
 ├── ui.rs            window, search field, result list, footer, UI smoke suite
@@ -102,6 +106,22 @@ data/
 
 `ui.rs` renders what `search` produced and reports what `actions` returned. It
 never decides either, so the styling can change without touching the logic.
+
+## Milestone 5 status
+
+- [x] **KDE-first global activation.** The desktop entry declares
+      `Meta+Space` as its fallback and the user install script deploys that
+      exact entry. Repeated activation toggles one resident Scene window.
+- [x] **Shortcut settings.** Scene reads the active bindings KDE recorded for
+      its desktop action, shows the session and fallback separately, and opens
+      `systemsettings kcm_keys` for recording and conflict handling. Scene
+      never writes `kglobalshortcutsrc` itself.
+- [x] **Observed Copilot-key status.** The settings test distinguishes an
+      observed bindable `Meta+Shift+F23`, stock `XF86Assistant` that KDE/Qt
+      cannot record, a bound desktop activation, and no observed event. It
+      never treats the presence of an F23 capability bit as hardware proof.
+- [x] **No hidden system changes.** The XKB workaround remains documented in
+      `docs/copilot-key.md`; Scene does not install or remove it.
 
 ## Milestone 4.5 status
 
@@ -309,7 +329,7 @@ Verified on Fedora 44, KDE Plasma, Wayland, GTK 4.22.
 - [x] Keyboard-only smoke path — covered by the UI smoke suite added in
       Milestone 4.5, which drives the whole contract against real widgets.
 
-Sixty-nine tests cover ranking determinism, grouping, case and whitespace
+Seventy-six tests cover ranking determinism, grouping, case and whitespace
 handling, category labelling, provider isolation, package-name validation,
 capability detection, adapter argument vectors, history bounds and
 persistence, launch watching, and the action outcomes for missing executables,

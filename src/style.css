@@ -227,6 +227,63 @@ list.results > row {
 .status.warn  { color: #FFC069; }
 .status.error { color: #FF8E8E; }
 
+/* ---------- settings ---------- */
+
+.settings-surface {
+  min-height: 430px;
+}
+
+.settings-header {
+  padding: 12px 16px;
+}
+
+.settings-header button {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.settings-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #F5F5F8;
+}
+
+.settings-body {
+  padding: 20px 24px 24px 24px;
+}
+
+.settings-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(241, 241, 244, 0.56);
+}
+
+.settings-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #F1F1F4;
+}
+
+.settings-explanation {
+  font-size: 12px;
+  color: rgba(241, 241, 244, 0.56);
+}
+
+.settings-body button {
+  min-height: 34px;
+}
+
+.settings-feedback {
+  font-size: 12px;
+}
+
+.settings-feedback.info { color: rgba(241, 241, 244, 0.78); }
+.settings-feedback.ok { color: #6FDDA8; }
+.settings-feedback.warn { color: #FFC069; }
+.settings-feedback.error { color: #FF8E8E; }
+
 /* ---------- preferences ---------- */
 
 .no-motion .result {
@@ -254,6 +311,10 @@ list.results > row {
 .contrast .brand,
 .contrast .empty-title,
 .contrast .empty-hint,
+.contrast .settings-title,
+.contrast .settings-label,
+.contrast .settings-value,
+.contrast .settings-explanation,
 .contrast entry.query {
   color: #FFFFFF;
 }

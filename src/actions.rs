@@ -102,6 +102,8 @@ pub enum Action {
     Process { action: ProcessAction },
     /// Say something in the launcher without touching the system.
     Message { text: String },
+    /// Navigate to Scene's own settings surface.
+    ShowSettings,
     /// Close Scene.
     Quit,
 }
@@ -123,6 +125,7 @@ pub enum Outcome {
     Failed(String),
     Cancelled(String),
     TimedOut(String),
+    ShowSettings,
     Quit,
 }
 
@@ -232,6 +235,7 @@ pub fn execute(action: &Action) -> Outcome {
             }
         }
         Action::Message { text } => Outcome::Reported(text.clone()),
+        Action::ShowSettings => Outcome::ShowSettings,
         Action::Quit => Outcome::Quit,
     }
 }
@@ -428,7 +432,7 @@ impl Outcome {
             | Outcome::Failed(message)
             | Outcome::Cancelled(message)
             | Outcome::TimedOut(message) => message,
-            Outcome::Quit => "",
+            Outcome::ShowSettings | Outcome::Quit => "",
         }
     }
 
@@ -443,7 +447,7 @@ impl Outcome {
             Outcome::Failed(_) => "Failed",
             Outcome::Cancelled(_) => "Cancelled",
             Outcome::TimedOut(_) => "Timed out",
-            Outcome::Quit => "",
+            Outcome::ShowSettings | Outcome::Quit => "",
         }
     }
 
@@ -458,7 +462,7 @@ impl Outcome {
             Outcome::Failed(_) => "dialog-error-symbolic",
             Outcome::Cancelled(_) => "process-stop-symbolic",
             Outcome::TimedOut(_) => "alarm-symbolic",
-            Outcome::Quit => "",
+            Outcome::ShowSettings | Outcome::Quit => "",
         }
     }
 
@@ -469,7 +473,7 @@ impl Outcome {
             Outcome::Succeeded(_) | Outcome::Started(_) => "ok",
             Outcome::Failed(_) | Outcome::TimedOut(_) => "error",
             Outcome::Cancelled(_) => "info",
-            Outcome::Quit => "info",
+            Outcome::ShowSettings | Outcome::Quit => "info",
         }
     }
 }

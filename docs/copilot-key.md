@@ -85,6 +85,28 @@ the physical key exists, so capability bits prove nothing here. Only an
 observed event does.
 
 It also cannot assume the chord is bindable: on a stock KDE session it is not.
-Detection needs to distinguish three states — no such key, a key that emits an
-unbindable keysym, and a key that can be bound — and say which one applies.
-The fallback shortcut has to remain the supported path in all three.
+Detection needs to distinguish three honest states — no event was observed, an
+observed key emitted an unbindable keysym, or an observed key/action can be
+bound — and say which one applies. A missing observation cannot prove that the
+hardware is absent. The fallback shortcut has to remain the supported path in
+all three.
+
+## Milestone 5 implementation
+
+Scene now exposes this distinction in **Scene Settings** (`Ctrl+,`). Its test
+accepts only evidence it can observe:
+
+- `Meta+Shift+F23` delivered to the focused GTK window is reported as
+  bindable;
+- `XF86Assistant` is reported as observed but unbindable by the current
+  KDE/Qt recorder path;
+- when KDE consumes an already-bound shortcut before GTK sees it, the
+  resulting activation of Scene counts as the observed desktop action while
+  the test is armed; and
+- ending the test without one of those events says "not observed", not "this
+  machine has no Copilot key".
+
+KDE remains authoritative for the binding. Scene reads its own `_launch`
+entry, proposes `Meta+Space` in the packaged desktop file, and opens KDE's
+native Shortcuts page for changes and conflicts. It does not edit
+`kglobalshortcutsrc`, `kxkbrc`, or the XKB override files.

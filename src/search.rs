@@ -519,6 +519,23 @@ pub fn catalogue() -> Vec<Item> {
             &["rust", "docs", "std", "reference"],
         ),
         Item {
+            id: "scene.settings".to_string(),
+            title: "Scene Settings".into(),
+            subtitle: "Global shortcut and Copilot-key status".into(),
+            kind: Kind::Scene,
+            icon: themed("preferences-system-symbolic"),
+            category: None,
+            keywords: words(&[
+                "settings",
+                "shortcut",
+                "hotkey",
+                "copilot",
+                "meta space",
+                "configure",
+            ]),
+            action: Action::ShowSettings,
+        },
+        Item {
             id: "scene.about".to_string(),
             title: "About Scene".into(),
             subtitle: "What this build can do".into(),
@@ -530,7 +547,7 @@ pub fn catalogue() -> Vec<Item> {
                 text: concat!(
                     "Scene ",
                     env!("CARGO_PKG_VERSION"),
-                    " — Milestone 4.5. Package adapters, watched launches, and recent-result ranking."
+                    " — Milestone 5. Global activation and honest Copilot-key status."
                 )
                 .into(),
             },
@@ -559,7 +576,7 @@ pub fn catalogue() -> Vec<Item> {
             category: None,
             keywords: words(&["keys", "bindings", "navigation", "help"]),
             action: Action::Message {
-                text: "Up and Down to move, Enter to open, Escape to clear then close, Ctrl+Q to quit.".into(),
+                text: "Up and Down to move, Enter to open, Escape to clear then close, Ctrl+, for settings, Ctrl+Q to quit.".into(),
             },
         },
         Item {

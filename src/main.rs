@@ -2,6 +2,7 @@ mod actions;
 mod apps;
 mod integrations;
 mod packages;
+mod platform;
 mod search;
 mod system;
 mod ui;
@@ -45,7 +46,7 @@ fn main() -> glib::ExitCode {
                 built
             }
         };
-        window.present();
+        window.activate();
     });
 
     app.run()

@@ -10,13 +10,14 @@ naming, module ownership) and applies here too. `docs/krunner-parity.md`,
 findings, not aspirations — correct them rather than working around them in
 code.
 
-The repository is at **Milestone 4.5** (overdue milestone items).
+The repository is at **Milestone 5** (global activation and Copilot-key
+support).
 
 ## Commands
 
 ```sh
 cargo run --release                     # build and launch
-cargo test                              # 69 tests: 68 hermetic, 1 UI smoke
+cargo test                              # 76 tests: 75 hermetic, 1 UI smoke
 cargo test ranking_is_stable_across_runs  # one test by name
 cargo test search::tests                # one module's tests
 cargo test ui::tests -- --nocapture     # the UI smoke suite alone
@@ -43,7 +44,7 @@ The UI smoke suite opens a real window for a fraction of a second while
 
 ## Architecture
 
-One dependency (gtk4), Rust 2024, seven modules with a deliberate one-way flow:
+One dependency (gtk4), Rust 2024, eight modules with a deliberate one-way flow:
 
 ```
 apps ─────────┐
@@ -51,6 +52,7 @@ packages ─────┼─> integrations ─> search (ranks) ─> ui (render
               │                                       │
               └───────────────────────────────────────┴─> actions ─> system
                                                              (subprocess only)
+platform (observes KDE/session state) ─────────────────> ui
 ```
 
 `search` sees two streams: `index()` for what exists regardless of the query,
@@ -78,11 +80,11 @@ Both are ranked by the same matcher, in one list.
   `Hidden`, `OnlyShowIn`, `NotShowIn` are honoured for free), then reads
   `GenericName`/`Keywords`/`Categories` from the entry with `glib::KeyFile`
   because the Rust bindings do not expose `GDesktopAppInfo`.
+- **`platform`** observes the desktop session and Scene's active KDE shortcut,
+  classifies only Copilot-key evidence Scene actually receives, and describes
+  KDE's recorder as a typed action. It never writes desktop or XKB settings.
 - **`main`** owns lifecycle only: one `Rc<ui::Launcher>` for the process, so a
-  second activation re-presents and resets the existing window.
-
-`PRODUCT_PLAN.md` §5 names one module that does not exist yet: `platform`
-(session/shortcut/workspace capability), which arrives with Milestone 5.
+  second activation toggles the existing window instead of creating another.
 
 ### The safety boundary
 

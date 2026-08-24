@@ -9,4 +9,5 @@ Icon=system-search
 Terminal=false
 Categories=Utility;
 Keywords=launcher;search;run;command;
+X-KDE-Shortcuts=Meta+Space
 StartupNotify=false

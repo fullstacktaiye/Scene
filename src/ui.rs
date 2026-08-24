@@ -13,6 +13,7 @@ use gtk::{gdk, gio, glib, pango};
 
 use crate::actions::{self, Action, Outcome, RunningAction, StartedAction};
 use crate::integrations;
+use crate::platform::{self, CopilotStatus};
 use crate::search::{self, History, Item};
 
 const WIDTH: i32 = 720;
@@ -32,6 +33,7 @@ pub fn load_styles() {
 
 pub struct Launcher {
     window: gtk::Window,
+    stack: gtk::Stack,
     entry: gtk::Entry,
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
@@ -41,6 +43,12 @@ pub struct Launcher {
     status: gtk::Box,
     status_icon: gtk::Image,
     status_label: gtk::Label,
+    shortcut_session: gtk::Label,
+    shortcut_active: gtk::Label,
+    copilot_status_label: gtk::Label,
+    shortcut_recorder: gtk::Button,
+    copilot_test: gtk::Button,
+    settings_feedback: gtk::Label,
 
     items: RefCell<Vec<Item>>,
     /// The providers' answers to the current query. They exist only while the
@@ -57,6 +65,8 @@ pub struct Launcher {
     /// different mutation on Enter.
     pending_confirmation: RefCell<Option<(String, Action)>>,
     running: RefCell<Option<RunningAction>>,
+    running_in_settings: Cell<bool>,
+    copilot_status: Cell<CopilotStatus>,
     /// What the user has chosen before, which adjusts ranking within a group.
     /// `search` decides how much it counts for; this module only records it.
     history: RefCell<History>,
@@ -160,6 +170,67 @@ impl Launcher {
         surface.set_size_request(WIDTH, -1);
         apply_preferences(&surface);
 
+        let shortcut_session = settings_value();
+        let shortcut_active = settings_value();
+        let copilot_status_label = settings_value();
+        let shortcut_recorder = gtk::Button::with_label("Change in KDE Shortcuts");
+        shortcut_recorder.add_css_class("suggested-action");
+        let copilot_test = gtk::Button::with_label("Test Copilot key");
+        let settings_feedback = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["settings-feedback"])
+            .build();
+        let back = gtk::Button::builder()
+            .icon_name("go-previous-symbolic")
+            .tooltip_text("Back to search")
+            .build();
+
+        let settings_header = row_box(12);
+        settings_header.add_css_class("settings-header");
+        settings_header.append(&back);
+        let settings_title = gtk::Label::new(Some("Scene Settings"));
+        settings_title.add_css_class("settings-title");
+        settings_header.append(&settings_title);
+
+        let settings_body = gtk::Box::new(gtk::Orientation::Vertical, 14);
+        settings_body.add_css_class("settings-body");
+        settings_body.append(&settings_section(
+            "Desktop session",
+            &shortcut_session,
+            "Global activation is implemented by the desktop, not by a hidden Scene daemon.",
+        ));
+        settings_body.append(&settings_section(
+            "Active shortcut",
+            &shortcut_active,
+            "Meta+Space is Scene's packaged fallback. KDE remains the source of truth for changes and conflicts.",
+        ));
+        settings_body.append(&shortcut_recorder);
+        settings_body.append(&settings_section(
+            "Copilot key",
+            &copilot_status_label,
+            "Scene reports support only after an event or desktop action is observed. It never infers hardware from F23 capability bits.",
+        ));
+        settings_body.append(&copilot_test);
+        settings_body.append(&settings_feedback);
+
+        let settings_surface = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        settings_surface.add_css_class("surface");
+        settings_surface.add_css_class("settings-surface");
+        settings_surface.append(&settings_header);
+        let settings_rule = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        settings_rule.add_css_class("rule");
+        settings_surface.append(&settings_rule);
+        settings_surface.append(&settings_body);
+        settings_surface.set_size_request(WIDTH, -1);
+        apply_preferences(&settings_surface);
+
+        let stack = gtk::Stack::new();
+        stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        stack.add_named(&surface, Some("launcher"));
+        stack.add_named(&settings_surface, Some("settings"));
+        stack.set_visible_child_name("launcher");
+
         let window = gtk::Window::builder()
             .application(app)
             .title("Scene")
@@ -167,11 +238,12 @@ impl Launcher {
             .resizable(false)
             .hide_on_close(true)
             .css_classes(["scene"])
-            .child(&surface)
+            .child(&stack)
             .build();
 
         let launcher = Rc::new(Self {
             window,
+            stack,
             entry,
             list,
             scroller,
@@ -181,6 +253,12 @@ impl Launcher {
             status,
             status_icon,
             status_label,
+            shortcut_session,
+            shortcut_active,
+            copilot_status_label,
+            shortcut_recorder,
+            copilot_test,
+            settings_feedback,
             items: RefCell::new(search::index()),
             answers: RefCell::new(Vec::new()),
             _apps: gio::AppInfoMonitor::get(),
@@ -189,10 +267,18 @@ impl Launcher {
             selected: Cell::new(0),
             pending_confirmation: RefCell::new(None),
             running: RefCell::new(None),
+            running_in_settings: Cell::new(false),
+            copilot_status: Cell::new(CopilotStatus::NotTested),
             history: RefCell::new(History::load()),
         });
 
         launcher.connect_signals();
+        let this = Rc::downgrade(&launcher);
+        back.connect_clicked(move |_| {
+            if let Some(launcher) = this.upgrade() {
+                launcher.close_settings();
+            }
+        });
         launcher.refresh();
         launcher
     }
@@ -226,22 +312,95 @@ impl Launcher {
             l.activate_selected(false);
         });
 
+        let this = Rc::downgrade(self);
+        self.shortcut_recorder.connect_clicked(move |_| {
+            let Some(launcher) = this.upgrade() else {
+                return;
+            };
+            let status = platform::ShortcutStatus::detect();
+            let Some(action) = status.recorder_action() else {
+                launcher.set_settings_feedback(
+                    "KDE's shortcut recorder is not available in this session.",
+                    "warn",
+                );
+                return;
+            };
+            launcher.running_in_settings.set(true);
+            launcher.start_action("settings.shortcuts.open", &action, false);
+        });
+
+        let this = Rc::downgrade(self);
+        self.copilot_test.connect_clicked(move |_| {
+            if let Some(launcher) = this.upgrade() {
+                launcher.toggle_copilot_test();
+            }
+        });
+
+        let this = Rc::downgrade(self);
+        self.window.connect_is_active_notify(move |window| {
+            if window.is_active()
+                && let Some(launcher) = this.upgrade()
+                && launcher.in_settings()
+            {
+                launcher.refresh_shortcut_status();
+            }
+        });
+
         // Capture phase: arrows and Enter are ours before the entry sees them,
         // everything else falls through to the search field.
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, _| match this.upgrade() {
-            Some(launcher) => launcher.key(key),
+        keys.connect_key_pressed(move |_, key, _, state| match this.upgrade() {
+            Some(launcher) => launcher.key_event(key, state),
             None => glib::Propagation::Proceed,
         });
         self.window.add_controller(keys);
+
+        let settings = gio::SimpleAction::new("settings", None);
+        let this = Rc::downgrade(self);
+        settings.connect_activate(move |_, _| {
+            if let Some(launcher) = this.upgrade() {
+                launcher.show_settings();
+            }
+        });
+        if let Some(app) = self.window.application() {
+            app.add_action(&settings);
+            app.set_accels_for_action("app.settings", &["<Control>comma"]);
+        }
     }
 
     /// The whole keyboard contract, in one place. The controller above only
     /// delivers the key; everything the launcher does with one is here, which
     /// is also what the smoke harness drives.
+    #[cfg(test)]
     fn key(self: &Rc<Self>, key: gdk::Key) -> glib::Propagation {
+        self.key_event(key, gdk::ModifierType::empty())
+    }
+
+    fn key_event(self: &Rc<Self>, key: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
+        if self.in_settings() {
+            if self.copilot_status.get() == CopilotStatus::Waiting {
+                if key == gdk::Key::Escape {
+                    self.finish_copilot_test(CopilotStatus::NotObserved);
+                    return glib::Propagation::Stop;
+                }
+                let name = key.name().unwrap_or_default();
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+                let meta =
+                    state.intersects(gdk::ModifierType::META_MASK | gdk::ModifierType::SUPER_MASK);
+                if let Some(observed) = platform::classify_copilot_key(&name, shift, meta) {
+                    self.finish_copilot_test(observed);
+                    return glib::Propagation::Stop;
+                }
+                return glib::Propagation::Proceed;
+            }
+            if key == gdk::Key::Escape {
+                self.close_settings();
+                return glib::Propagation::Stop;
+            }
+            return glib::Propagation::Proceed;
+        }
         match key {
             gdk::Key::Down => self.move_selection(1),
             gdk::Key::Up => self.move_selection(-1),
@@ -263,11 +422,102 @@ impl Launcher {
 
     /// Show the launcher in a known-good state, however many times it is called.
     pub fn present(&self) {
+        self.stack.set_visible_child_name("launcher");
         self.entry.set_text("");
         self.clear_status();
         self.refresh();
         self.window.present();
         self.entry.grab_focus();
+    }
+
+    /// Desktop activation is a toggle. A Copilot test is the one exception:
+    /// while armed, another activation is itself the observed desktop action.
+    pub fn activate(&self) {
+        if self.window.is_visible() {
+            if self.in_settings() && self.copilot_status.get() == CopilotStatus::Waiting {
+                self.finish_copilot_test(CopilotStatus::ActivationObserved);
+            } else {
+                self.window.set_visible(false);
+            }
+        } else {
+            self.present();
+        }
+    }
+
+    fn in_settings(&self) -> bool {
+        self.stack.visible_child_name().as_deref() == Some("settings")
+    }
+
+    fn show_settings(&self) {
+        self.pending_confirmation.borrow_mut().take();
+        self.clear_status();
+        self.settings_feedback.set_visible(false);
+        self.refresh_shortcut_status();
+        self.stack.set_visible_child_name("settings");
+        self.window.present();
+        self.copilot_test.grab_focus();
+    }
+
+    fn close_settings(&self) {
+        if self.copilot_status.get() == CopilotStatus::Waiting {
+            self.finish_copilot_test(CopilotStatus::NotObserved);
+        }
+        self.stack.set_visible_child_name("launcher");
+        self.entry.grab_focus();
+    }
+
+    fn refresh_shortcut_status(&self) {
+        let status = platform::ShortcutStatus::detect();
+        self.shortcut_session.set_text(&status.desktop.summary());
+        self.shortcut_active.set_text(&status.shortcut_summary());
+        let recorder_available = status.recorder.is_some();
+        self.shortcut_recorder.set_sensitive(recorder_available);
+        self.shortcut_recorder
+            .set_tooltip_text(Some(if recorder_available {
+                "Open KDE's native shortcut recorder"
+            } else {
+                "KDE's shortcut recorder is unavailable in this session"
+            }));
+        self.copilot_status_label
+            .set_text(self.copilot_status.get().summary());
+    }
+
+    fn toggle_copilot_test(&self) {
+        let next = if self.copilot_status.get() == CopilotStatus::Waiting {
+            CopilotStatus::NotObserved
+        } else {
+            CopilotStatus::Waiting
+        };
+        if next == CopilotStatus::Waiting {
+            self.copilot_status.set(next);
+            self.copilot_status_label.set_text(next.summary());
+            self.copilot_test.set_label("Finish without detection");
+            self.set_settings_feedback(
+                "Press the Copilot key now. Escape ends the test without claiming support.",
+                "info",
+            );
+        } else {
+            self.finish_copilot_test(next);
+        }
+    }
+
+    fn finish_copilot_test(&self, status: CopilotStatus) {
+        self.copilot_status.set(status);
+        self.copilot_status_label.set_text(status.summary());
+        self.copilot_test.set_label("Test Copilot key");
+        let tone = match status {
+            CopilotStatus::BindableObserved | CopilotStatus::ActivationObserved => "ok",
+            CopilotStatus::UnbindableObserved | CopilotStatus::NotObserved => "warn",
+            CopilotStatus::NotTested | CopilotStatus::Waiting => "info",
+        };
+        self.set_settings_feedback(status.summary(), tone);
+    }
+
+    fn set_settings_feedback(&self, text: &str, tone: &str) {
+        self.settings_feedback
+            .set_css_classes(&["settings-feedback", tone]);
+        self.settings_feedback.set_text(text);
+        self.settings_feedback.set_visible(true);
     }
 
     fn refresh(&self) {
@@ -473,7 +723,14 @@ impl Launcher {
     }
 
     fn finish_outcome(&self, outcome: Outcome) {
-        if outcome == Outcome::Quit {
+        if outcome == Outcome::ShowSettings {
+            self.show_settings();
+        } else if self.running_in_settings.replace(false) {
+            let tone = outcome.tone();
+            let message = format!("{} — {}", outcome.prefix(), outcome.message());
+            self.set_settings_feedback(&message, tone);
+            self.refresh_shortcut_status();
+        } else if outcome == Outcome::Quit {
             if let Some(app) = self.window.application() {
                 app.quit();
             }
@@ -556,6 +813,34 @@ fn row_box(spacing: i32) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, spacing);
     row.set_valign(gtk::Align::Center);
     row
+}
+
+fn settings_value() -> gtk::Label {
+    gtk::Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .selectable(true)
+        .css_classes(["settings-value"])
+        .build()
+}
+
+fn settings_section(title: &str, value: &gtk::Label, explanation: &str) -> gtk::Box {
+    let title = gtk::Label::builder()
+        .label(title)
+        .xalign(0.0)
+        .css_classes(["settings-label"])
+        .build();
+    let explanation = gtk::Label::builder()
+        .label(explanation)
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["settings-explanation"])
+        .build();
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    section.append(&title);
+    section.append(value);
+    section.append(&explanation);
+    section
 }
 
 fn icon(name: &str, class: &str) -> gtk::Image {
@@ -819,6 +1104,12 @@ mod tests {
 
         let program = crate::system::tests::fake_program("sleep 30");
         let mut items = crate::search::tests::fixture();
+        items.push(item(
+            "scene.settings",
+            "Scene Settings",
+            "settings shortcut copilot",
+            Action::ShowSettings,
+        ));
         items.push(mutation());
         items.push(slow(&program.to_string_lossy()));
         // Enough applications to pass the resting limit, so the harness covers
@@ -934,6 +1225,47 @@ mod tests {
         assert!(!launcher.status.is_visible());
         assert_eq!(launcher.selected.get(), 0);
         assert_eq!(launcher.rows.borrow().len(), resting);
+
+        // Desktop activation toggles the one resident window rather than
+        // creating another or leaving a stale query behind.
+        launcher.activate();
+        assert!(!launcher.window.is_visible(), "activation did not hide");
+        launcher.entry.set_text("stale");
+        launcher.activate();
+        assert!(launcher.window.is_visible(), "activation did not present");
+        assert!(launcher.entry.text().is_empty(), "activation kept a query");
+
+        // Settings are keyboard-reachable and present observed desktop state.
+        launcher.entry.set_text("copilot");
+        launcher.key(gdk::Key::Return);
+        assert!(launcher.in_settings());
+        assert!(!launcher.shortcut_session.text().is_empty());
+        assert!(!launcher.shortcut_active.text().is_empty());
+
+        // Direct F23 observation proves only the event Scene actually saw.
+        launcher.toggle_copilot_test();
+        assert_eq!(launcher.copilot_status.get(), CopilotStatus::Waiting);
+        launcher.key_event(
+            gdk::Key::F23,
+            gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::META_MASK,
+        );
+        assert_eq!(
+            launcher.copilot_status.get(),
+            CopilotStatus::BindableObserved
+        );
+
+        // A bound global shortcut may be consumed by KDE before GTK sees its
+        // key event. While the test is armed, application activation is the
+        // observed desktop action and must not toggle the window closed.
+        launcher.toggle_copilot_test();
+        launcher.activate();
+        assert_eq!(
+            launcher.copilot_status.get(),
+            CopilotStatus::ActivationObserved
+        );
+        assert!(launcher.window.is_visible());
+        launcher.key(gdk::Key::Escape);
+        assert!(!launcher.in_settings());
 
         // A mutation asks first, and only Enter answers.
         launcher.entry.set_text("mutate");

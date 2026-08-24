@@ -527,14 +527,46 @@ see whether the preferred key is actually supported.
 
 **Checklist:**
 
-- [ ] Configurable fallback shortcut.
-- [ ] KDE Plasma-first activation path.
-- [ ] Best-effort Copilot-key detection through observed input or desktop
+- [x] Configurable fallback shortcut.
+- [x] KDE Plasma-first activation path.
+- [x] Best-effort Copilot-key detection through observed input or desktop
       action.
-- [ ] Settings view for active shortcut and detection status.
-- [ ] Manual shortcut recording where supported.
-- [ ] Clear unsupported-session reporting.
-- [ ] Manual KDE validation of activation and repeated toggling.
+- [x] Settings view for active shortcut and detection status.
+- [x] Manual shortcut recording where supported.
+- [x] Clear unsupported-session reporting.
+- [x] Manual KDE validation of activation and repeated toggling.
+
+**What was done, and what it proves.**
+
+`Meta+Space` is declared as the fallback in Scene's desktop entry. KDE remains
+authoritative for the active binding and conflict handling: `platform` reads
+only Scene's `_launch` entry, reports the packaged fallback separately when no
+active shortcut is observed, and exposes KDE's `systemsettings kcm_keys`
+recorder without writing `kglobalshortcutsrc` itself. Other sessions receive a
+plain unsupported result and keep the desktop-entry launch path.
+
+**Scene Settings**, available as a search result and with `Ctrl+,`, shows the
+observed desktop/session, active shortcuts, recorder availability, and
+Copilot-key status. Its test recognizes only evidence delivered to Scene: a
+bindable `Meta+Shift+F23`, the stock unbindable `XF86Assistant`, or activation
+of Scene's already-bound KDE desktop action while the test is armed. Ending a
+test without one says "not observed" rather than claiming the hardware is
+absent. Scene never installs or removes the XKB workaround documented in
+`docs/copilot-key.md`.
+
+Activation is now a toggle over the one resident launcher. Hidden activation
+presents a reset, focused window; activating again hides it. The GTK smoke
+suite covers that lifecycle, settings navigation, both observable Copilot
+paths, and the unchanged launcher keyboard contract.
+
+**Manual KDE pass: 2026-08-24, Fedora 44 / KDE Plasma 6.7 / Wayland.** The
+installed desktop entry contained the `Meta+Space` fallback while KDE reported
+the existing active `Meta+Space` and `Meta+Shift+F23` bindings. Invoking KDE's
+registered `_launch` action repeatedly alternated between a hidden and visible
+Scene window, and after each hand-off one resident process remained. The
+settings view rendered the same live state, and `systemsettings kcm_keys`
+opened the native recorder with Scene listed. No shortcut or XKB configuration
+was changed during validation.
 
 ### Milestone 6 — KDE replacement foundation
 
