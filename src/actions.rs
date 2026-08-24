@@ -7,11 +7,15 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use gtk::prelude::*;
+use gtk::{gdk, gio, glib};
+
 /// What executing a result actually does.
 #[derive(Clone, Debug)]
 pub enum Action {
-    /// Run a program, detached from Scene.
-    Run { program: String, args: Vec<String> },
+    /// Start an installed application through the desktop's own application
+    /// model, so startup notification and window activation work.
+    Launch { app: gio::AppInfo },
     /// Hand a path or URI to the desktop's default handler.
     Open { target: String },
     /// Say something in the launcher without touching the system.
@@ -37,10 +41,23 @@ pub enum Outcome {
 
 pub fn execute(action: &Action) -> Outcome {
     match action {
-        Action::Run { program, args } => run(program, args),
+        Action::Launch { app } => launch(app),
         Action::Open { target } => open(target),
         Action::Message { text } => Outcome::Reported(text.clone()),
         Action::Quit => Outcome::Quit,
+    }
+}
+
+/// Hands the application back to the desktop to start. The launch context
+/// carries the activation token, without which the new window would open
+/// behind Scene on Wayland.
+fn launch(app: &gio::AppInfo) -> Outcome {
+    let name = app.display_name();
+    let context = gdk::Display::default().map(|display| display.app_launch_context());
+
+    match app.launch(&[], context.as_ref()) {
+        Ok(()) => Outcome::Succeeded(format!("Opened {name}")),
+        Err(e) => Outcome::Failed(format!("Could not open {name}: {e}")),
     }
 }
 
@@ -64,9 +81,14 @@ fn run(program: &str, args: &[String]) -> Outcome {
     }
 }
 
+/// `mailto:` and `tel:` are URIs with no "//", so ask GLib rather than
+/// pattern-matching the string.
+fn is_uri(target: &str) -> bool {
+    glib::Uri::peek_scheme(target).is_some()
+}
+
 fn open(target: &str) -> Outcome {
-    let is_uri = target.contains("://");
-    if !is_uri && !Path::new(target).exists() {
+    if !is_uri(target) && !Path::new(target).exists() {
         return Outcome::Unavailable(format!("{target} does not exist"));
     }
     match run("xdg-open", &[target.to_string()]) {
@@ -142,10 +164,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_unavailable_rather_than_failed() {
-        let outcome = execute(&Action::Run {
-            program: "scene-no-such-binary-for-tests".into(),
-            args: Vec::new(),
-        });
+        let outcome = run("scene-no-such-binary-for-tests", &[]);
         assert!(matches!(outcome, Outcome::Unavailable(_)), "{outcome:?}");
         assert!(!outcome.should_dismiss());
     }
@@ -159,6 +178,17 @@ mod tests {
             Outcome::Unavailable(message) => assert!(message.contains("/scene/no/such/path")),
             other => panic!("expected unavailable, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_uri_without_a_double_slash_is_still_a_uri() {
+        // Regression: `mailto:` used to be treated as a path, and so reported
+        // as missing rather than handed to the mail client.
+        assert!(is_uri("mailto:someone@example.com"));
+        assert!(is_uri("tel:+441234567890"));
+        assert!(is_uri("https://example.com"));
+        assert!(!is_uri("/home/someone/notes.txt"));
+        assert!(!is_uri("relative/path"));
     }
 
     #[test]

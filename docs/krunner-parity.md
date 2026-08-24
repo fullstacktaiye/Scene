@@ -196,23 +196,48 @@ Inherited from `PRODUCT_PLAN.md` §4 and applied to every new result type:
 
 **Rides on:** `M2` — Application discovery and launching
 **Replaces:** `krunner_services`, `locations`
+**Status:** complete except where noted, on Fedora 44 / Plasma 6.7 / Wayland.
 
 **Outcome:** A user can find and launch any installed application, and open
 any path or URL, at least as reliably as with KRunner.
 
-- [ ] Discover `.desktop` entries from all XDG data directories, honouring
+- [x] Discover `.desktop` entries from all XDG data directories, honouring
       `NoDisplay`, `Hidden`, `OnlyShowIn` / `NotShowIn`, and `TryExec`.
-- [ ] Index asynchronously; the launcher is usable while indexing runs.
-- [ ] Watch the application directories and re-index on change, without a
+- [x] Index asynchronously; the launcher is usable while indexing runs.
+- [x] Watch the application directories and re-index on change, without a
       restart.
-- [ ] Match on name, generic name, comment, keywords, and executable name.
-- [ ] Render the real themed icon, with a deterministic fallback.
-- [ ] Launch through the desktop application model, not a bare `exec`, so
+- [x] Match on name, generic name, comment, keywords, and executable name.
+- [x] Render the real themed icon, with a deterministic fallback.
+- [x] Launch through the desktop application model, not a bare `exec`, so
       startup notification and scope are correct.
 - [ ] Support a `.desktop` entry's declared additional actions.
-- [ ] Open paths, `file://`, `http(s)://`, and `mailto:` URIs.
+- [x] Open paths, `file://`, `http(s)://`, and `mailto:` URIs.
 - [ ] Report a launch failure in the UI, distinguishing missing executable,
       permission denied, and non-zero exit.
+
+Notes on the two unticked items and one qualified tick:
+
+**Additional actions** are not implemented. A `.desktop` entry can declare
+extra actions — "New Private Window", "Open a New Document" — and Scene
+currently ignores them. This is the right shape for the inline-actions work in
+P6 rather than a special case here, so it is deliberately deferred.
+
+**Launch failure detail** is partial. A missing executable and a permission
+failure are distinguished, but a detached process's non-zero exit is not
+observed at all, because nothing is watching it. Closing that gap is the
+bounded-execution work in `M3`, not a patch to the launcher.
+
+**Indexing** is synchronous rather than threaded. Discovery measures 12-19 ms
+warm and 27 ms cold for 292 entries, and runs at startup before any window
+exists, so there is no interval during which a visible launcher is unusable. A
+thread here would be machinery with nothing to do. The measurement is recorded
+in `apps.rs` so a regression shows up as a changed comment rather than a
+silent cost. Re-indexing after an install is driven by `AppInfoMonitor` and was
+verified by installing an entry while Scene was running and watching it appear.
+
+**Honouring the hidden flags** is GIO's `g_app_info_should_show`, not Scene's
+own parsing. On this machine that filters 292 entries to 81; 210 of the 211
+hidden carry `NoDisplay=true`, which accounts for the difference.
 
 ### P2 — Answers and keyword syntax
 

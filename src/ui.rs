@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use gtk::accessible::{Property, State};
 use gtk::prelude::*;
-use gtk::{gdk, glib, pango};
+use gtk::{gdk, gio, glib, pango};
 
 use crate::actions::{self, Outcome};
 use crate::search::{self, Item};
@@ -40,7 +40,9 @@ pub struct Launcher {
     status_icon: gtk::Image,
     status_label: gtk::Label,
 
-    items: Vec<Item>,
+    items: RefCell<Vec<Item>>,
+    /// Held so the installed-applications signal stays connected.
+    _apps: gio::AppInfoMonitor,
     hits: RefCell<Vec<usize>>,
     rows: RefCell<Vec<gtk::ListBoxRow>>,
     selected: Cell<usize>,
@@ -165,7 +167,8 @@ impl Launcher {
             status,
             status_icon,
             status_label,
-            items: search::catalogue(),
+            items: RefCell::new(search::index()),
+            _apps: gio::AppInfoMonitor::get(),
             hits: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             selected: Cell::new(0),
@@ -177,6 +180,16 @@ impl Launcher {
     }
 
     fn connect_signals(self: &Rc<Self>) {
+        // Scene is meant to stay resident, so an application installed while
+        // it is running has to show up without a restart.
+        let this = Rc::downgrade(self);
+        self._apps.connect_changed(move |_| {
+            if let Some(l) = this.upgrade() {
+                *l.items.borrow_mut() = search::index();
+                l.refresh();
+            }
+        });
+
         let this = Rc::downgrade(self);
         self.entry.connect_changed(move |_| {
             if let Some(l) = this.upgrade() {
@@ -227,7 +240,8 @@ impl Launcher {
 
     fn refresh(&self) {
         let query = self.entry.text().to_string();
-        let hits = search::search(&query, &self.items);
+        let items = self.items.borrow();
+        let hits = search::search(&query, &items);
 
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
@@ -236,7 +250,7 @@ impl Launcher {
         let mut group = None;
 
         for &index in &hits {
-            let item = &self.items[index];
+            let item = &items[index];
             if group != Some(item.kind) {
                 group = Some(item.kind);
                 self.list.append(&section_row(item.kind.heading()));
@@ -314,7 +328,7 @@ impl Launcher {
             }
         };
 
-        let outcome = actions::execute(&self.items[index].action);
+        let outcome = actions::execute(&self.items.borrow()[index].action);
         if outcome == Outcome::Quit {
             if let Some(app) = self.window.application() {
                 app.quit();
@@ -433,7 +447,7 @@ fn result_row(item: &Item) -> gtk::ListBoxRow {
     text.append(&title);
     text.append(&subtitle);
 
-    let tag = gtk::Label::new(Some(item.kind.tag()));
+    let tag = gtk::Label::new(Some(item.tag()));
     tag.add_css_class("tag");
 
     // The selected row is marked by a bar, weight and this glyph, so the
@@ -455,22 +469,29 @@ fn result_row(item: &Item) -> gtk::ListBoxRow {
         .css_classes(["result"])
         .build();
     // The stable id names the row, so tests and tooling can address it.
-    row.set_widget_name(item.id);
+    row.set_widget_name(&item.id);
 
-    let described = format!("{}. {}. {}", item.title, item.kind.tag(), item.subtitle);
+    let described = format!("{}. {}. {}", item.title, item.tag(), item.subtitle);
     row.update_property(&[Property::Label(described.as_str())]);
     row
 }
 
 /// Prefer the item's own icon, fall back to one that always exists.
 fn resolved_icon(item: &Item) -> gtk::Image {
-    let named = gdk::Display::default()
-        .map(|display| gtk::IconTheme::for_display(&display))
-        .is_some_and(|theme| theme.has_icon(item.icon));
+    match item.icon.as_ref().filter(|icon| is_available(icon)) {
+        Some(icon) => gtk::Image::from_gicon(icon),
+        None => gtk::Image::from_icon_name(item.kind.fallback_icon()),
+    }
+}
 
-    gtk::Image::from_icon_name(if named {
-        item.icon
-    } else {
-        item.kind.fallback_icon()
-    })
+/// A themed icon is only usable if the current theme actually has it —
+/// otherwise GTK renders a broken-image placeholder. Icons that are a file on
+/// disk, as bundled applications often ship, are left to GTK to load.
+fn is_available(icon: &gio::Icon) -> bool {
+    let Some(themed) = icon.downcast_ref::<gio::ThemedIcon>() else {
+        return true;
+    };
+    gdk::Display::default()
+        .map(|display| gtk::IconTheme::for_display(&display))
+        .is_some_and(|theme| themed.names().iter().any(|name| theme.has_icon(name)))
 }
