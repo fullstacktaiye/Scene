@@ -396,6 +396,43 @@ appropriate available tool on Debian-family, Fedora, and Arch systems.
 - [x] Verify at least one Debian/Ubuntu-family, Fedora, and Arch environment.
 - [x] Verify core launcher behavior when an adapter is unavailable.
 
+### Milestone 4.5 — Overdue milestone items
+
+**Why this exists:** Milestones 0-4 are otherwise complete, but four checklist
+items whose milestone has already passed are still open. They are collected
+here rather than left scattered across finished milestones, so that "Milestone
+4 is done" cannot quietly mean "done except for the parts nobody is tracking".
+Recorded when Milestone 4 completed.
+
+**User-visible outcome:** Every checklist item belonging to a completed
+milestone is either finished or carries an explicit deferral naming the
+milestone that will finish it.
+
+| Item | Originally due | Why it is still open |
+| --- | --- | --- |
+| Keyboard-only smoke path is reliable | Milestone 1 | The bindings are wired and their logic is unit-tested, but nobody has driven Up/Down, Enter and Escape from a real keyboard. This Wayland session has no input-injection tool, so the item needs a manual pass or the UI smoke harness that Milestone 8 also calls for. |
+| Recent/frequent ranking | Milestone 2 | The plan gates it on a deterministic ranking baseline, which landed inside Milestone 2. The precondition has been met since; the work has not started, and no decision to defer it was recorded. |
+| Fedora desktop-application packaging check | Milestone 2 | Never performed. `data/dev.scene.Scene.desktop` passes `desktop-file-validate`, which is a different and much weaker check than the Fedora packaging guidance. Its result feeds the Fedora package in Milestone 8. |
+| Launch failure detail: non-zero exit | Milestone 3, via `docs/krunner-parity.md` P1 | A missing executable and a permission failure are distinguished. A launched or detached program that starts and *then* fails is not observed at all, because nothing waits on it — so Scene reports `Succeeded` for it. The parity plan assigned this gap to Milestone 3's bounded-execution work; Milestone 3 built that machinery without applying it to launches. |
+
+**Checklist:**
+
+- [ ] Drive the keyboard-only path end to end on KDE Plasma — query, Up/Down,
+      Enter, Escape, empty results, confirmation, and cancellation — and
+      record the result. Add a UI smoke harness if manual validation keeps
+      being the blocker.
+- [ ] Settle recent/frequent ranking: implement it over the deterministic
+      baseline with a way to disable it, or move it to Milestone 6 with a
+      stated reason. It must not stay implicit.
+- [ ] Check the desktop entry and the build against the [Fedora desktop
+      application packaging
+      guidance](https://docs.fedoraproject.org/nn/packaging-guidelines/), and
+      record what it requires that Scene does not yet do.
+- [ ] Observe a launched program's outcome, or say in the UI that Scene does
+      not. A launch that starts and then fails must not report success.
+- [ ] Every remaining unticked item in Milestones 0-4 is either closed here or
+      carries an explicit deferral with a target milestone.
+
 ### Milestone 5 — Global activation and Copilot-key support
 
 **User-visible outcome:** A user can activate Scene without a terminal and can
