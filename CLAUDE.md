@@ -23,11 +23,19 @@ cargo test ui::tests -- --nocapture     # the UI smoke suite alone
 cargo fmt --check
 cargo clippy --all-targets
 desktop-file-validate data/dev.scene.Scene.desktop   # after editing the entry
+./scripts/install-user.sh               # make the desktop shortcut run this build
 ```
 
 GTK4 development headers are a prerequisite (`gtk4-devel` / `libgtk-4-dev` /
 `gtk4`). `SCENE_DIRECTORY=/path scene` overrides the configured-directory
 integration, and `SCENE_HISTORY=off scene` turns recent/frequent ranking off.
+
+`cargo build` does not change what the desktop shortcut starts. That runs the
+installed binary through a desktop entry, and Scene is single-instance, so a
+resident process keeps serving the old code even after the file is replaced.
+`scripts/install-user.sh` handles both, and regenerates the user entry from
+`data/dev.scene.Scene.desktop` so the deployed copy cannot drift from the one
+in the repository. Never hand-edit the copy under `~/.local/share/applications`.
 
 The UI smoke suite opens a real window for a fraction of a second while
 `cargo test` runs, which is expected. Where there is no display it prints

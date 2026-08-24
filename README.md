@@ -25,6 +25,21 @@ sudo pacman -S gtk4
 cargo run --release
 ```
 
+To run it from a desktop shortcut instead, install it for your user:
+
+```sh
+./scripts/install-user.sh
+```
+
+That installs the binary, generates `~/.local/share/applications/dev.scene.Scene.desktop`
+from `data/dev.scene.Scene.desktop` with an absolute `Exec`, installs the
+AppStream metainfo, validates both, and stops any resident instance. Run it
+after every change you want the shortcut to pick up: `cargo build --release`
+writes `target/release/scene`, which is *not* the binary a desktop entry runs,
+and a resident single-instance process would keep serving the old code
+regardless. Binding the shortcut itself is a KDE setting — System Settings →
+Keyboard → Shortcuts → Applications → Scene. Packaging proper is Milestone 8.
+
 Scene registers as a single instance. Running `scene` again while it is already
 running re-presents the existing window with a cleared query, rather than
 opening a second one.
@@ -76,6 +91,9 @@ src/
 ├── system.rs        executable discovery and bounded subprocesses
 ├── ui.rs            window, search field, result list, footer, UI smoke suite
 └── style.css        the launcher's appearance
+
+scripts/
+└── install-user.sh  install for the current user, for the desktop shortcut
 
 data/
 ├── dev.scene.Scene.desktop       the desktop entry

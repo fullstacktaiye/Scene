@@ -33,6 +33,11 @@ Run `cargo fmt` before committing when formatting is needed. Validate edits to
 the desktop entry with `desktop-file-validate data/dev.scene.Scene.desktop`
 when its metadata changes.
 
+To exercise a change through the desktop's global shortcut rather than a
+terminal, run `./scripts/install-user.sh`. A `cargo build` alone will not do
+it: the shortcut runs the installed binary, and a resident single-instance
+process keeps serving the old code until it is stopped.
+
 ## Coding Style & Naming Conventions
 
 Use Rust 2024 and rustfmt defaults (four-space indentation). Follow existing
