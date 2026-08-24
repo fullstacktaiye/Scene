@@ -423,11 +423,13 @@ fn section_row(heading: &str) -> gtk::ListBoxRow {
 }
 
 fn result_row(item: &Item) -> gtk::ListBoxRow {
-    let tile = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    // The image is the tile. A box would hand its only child the child's
+    // natural width and pack it against the left edge, whereas an image
+    // centres its icon in whatever space CSS gives it.
+    let tile = resolved_icon(item);
     tile.set_css_classes(&["tile", item.kind.slug()]);
     tile.set_halign(gtk::Align::Center);
     tile.set_valign(gtk::Align::Center);
-    tile.append(&resolved_icon(item));
 
     let title = gtk::Label::new(Some(&item.title));
     title.set_xalign(0.0);
