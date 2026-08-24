@@ -1,0 +1,270 @@
+/* Scene launcher.
+   Dark by design: this is an overlay surface, not a document window. */
+
+window.scene {
+  background: transparent;
+}
+
+/* The margin is the room the shadow is drawn into. */
+.surface {
+  margin: 22px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: linear-gradient(180deg, #1B1B22 0%, #121216 100%);
+  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.45);
+  color: #F1F1F4;
+}
+
+/* ---------- search ---------- */
+
+.search {
+  padding: 15px 18px 14px 18px;
+}
+
+.search-icon {
+  color: rgba(241, 241, 244, 0.50);
+  -gtk-icon-size: 18px;
+  margin-right: 13px;
+}
+
+entry.query {
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  padding: 0;
+  min-height: 30px;
+  font-size: 19px;
+  color: #F5F5F8;
+  caret-color: #8B7BFF;
+}
+
+entry.query:focus {
+  border: none;
+  box-shadow: none;
+  outline: none;
+}
+
+entry.query > text > selection {
+  background-color: rgba(139, 123, 255, 0.38);
+  color: #FFFFFF;
+}
+
+entry.query > text > placeholder {
+  color: rgba(241, 241, 244, 0.42);
+}
+
+.rule {
+  min-height: 1px;
+  background: rgba(255, 255, 255, 0.075);
+}
+
+/* ---------- results ---------- */
+
+scrolledwindow.results {
+  padding: 6px 6px 8px 6px;
+}
+
+list.results {
+  background: transparent;
+}
+
+list.results > row {
+  background: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.section {
+  padding: 12px 12px 5px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(241, 241, 244, 0.56);
+}
+
+.result {
+  margin: 1px 2px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border-left: 3px solid transparent;
+  transition: background 90ms ease-out;
+}
+
+.result:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.result.selected {
+  background: rgba(255, 255, 255, 0.085);
+  border-left-color: #8B7BFF;
+}
+
+.tile {
+  min-width: 30px;
+  min-height: 30px;
+  margin-right: 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tile image {
+  -gtk-icon-size: 17px;
+  color: #F1F1F4;
+}
+
+.tile.application { background: linear-gradient(155deg, rgba(139, 123, 255, 0.34), rgba(139, 123, 255, 0.09)); }
+.tile.folder      { background: linear-gradient(155deg, rgba(90, 178, 255, 0.32), rgba(90, 178, 255, 0.09)); }
+.tile.web         { background: linear-gradient(155deg, rgba(72, 212, 166, 0.30), rgba(72, 212, 166, 0.09)); }
+.tile.scene       { background: linear-gradient(155deg, rgba(255, 176, 92, 0.30), rgba(255, 176, 92, 0.09)); }
+
+.title {
+  font-size: 14px;
+  color: rgba(241, 241, 244, 0.90);
+}
+
+.result.selected .title {
+  font-weight: 600;
+  color: #FFFFFF;
+}
+
+.subtitle {
+  font-size: 12px;
+  color: rgba(241, 241, 244, 0.56);
+}
+
+.tag {
+  margin-left: 12px;
+  font-size: 11px;
+  color: rgba(241, 241, 244, 0.52);
+}
+
+.enter {
+  margin-left: 10px;
+  opacity: 0;
+}
+
+.result.selected .enter {
+  opacity: 1;
+}
+
+/* ---------- empty state ---------- */
+
+.empty {
+  padding: 46px 20px 50px 20px;
+}
+
+.empty image {
+  -gtk-icon-size: 26px;
+  color: rgba(241, 241, 244, 0.34);
+  margin-bottom: 12px;
+}
+
+.empty-title {
+  font-size: 14px;
+  color: rgba(241, 241, 244, 0.74);
+}
+
+.empty-hint {
+  margin-top: 5px;
+  font-size: 12px;
+  color: rgba(241, 241, 244, 0.52);
+}
+
+/* ---------- footer ---------- */
+
+.footer {
+  padding: 9px 14px 9px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.brand {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(241, 241, 244, 0.66);
+}
+
+.hints {
+  margin-left: 14px;
+}
+
+.hint {
+  margin: 0 2px 0 6px;
+  font-size: 11px;
+  color: rgba(241, 241, 244, 0.56);
+}
+
+.kbd {
+  margin-left: 8px;
+  padding: 2px 6px;
+  min-width: 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(241, 241, 244, 0.68);
+}
+
+.status image {
+  -gtk-icon-size: 13px;
+  margin-right: 7px;
+}
+
+.status label {
+  font-size: 12px;
+}
+
+.status.ok    { color: #6FDDA8; }
+.status.info  { color: rgba(241, 241, 244, 0.78); }
+.status.warn  { color: #FFC069; }
+.status.error { color: #FF8E8E; }
+
+/* ---------- preferences ---------- */
+
+.no-motion .result {
+  transition: none;
+}
+
+.contrast.surface {
+  background: #000000;
+  border-color: #FFFFFF;
+}
+
+.contrast .rule,
+.contrast .footer {
+  background: #000000;
+  border-color: #FFFFFF;
+}
+
+.contrast .title,
+.contrast .subtitle,
+.contrast .section,
+.contrast .tag,
+.contrast .hint,
+.contrast .kbd,
+.contrast .brand,
+.contrast .empty-title,
+.contrast .empty-hint,
+.contrast entry.query {
+  color: #FFFFFF;
+}
+
+.contrast .tile {
+  background: #000000;
+  border-color: #FFFFFF;
+}
+
+.contrast .result.selected {
+  background: #FFFFFF;
+  border-left-color: #FFFFFF;
+}
+
+.contrast .result.selected .title,
+.contrast .result.selected .subtitle,
+.contrast .result.selected .tag,
+.contrast .result.selected .enter {
+  color: #000000;
+}

@@ -1,0 +1,9 @@
+[package]
+name = "scene"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, keyboard-first Linux launcher"
+license = "MIT"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }

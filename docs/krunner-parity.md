@@ -1,0 +1,399 @@
+# KRunner Parity Plan
+
+This document defines what Scene must do to **match** KRunner, and where it
+must **exceed** it. It expands [`PRODUCT_PLAN.md`](../PRODUCT_PLAN.md)
+Milestone 6 ("KDE replacement foundation") into a concrete, checkable track.
+
+Parity milestones are numbered `P1`–`P6` so they never collide with the
+product milestones `M0`–`M8`. Each `P` milestone names the `M` milestone it
+rides on. `P` milestones are not a separate project; they are the acceptance
+bar applied to the product track.
+
+## 1. How to read this document
+
+A capability is **matched** when a user who relied on the KRunner equivalent
+can stop using it without losing behaviour they depended on. That is a higher
+bar than "a similar result appears in the list": ranking, latency, keyword
+syntax, and failure behaviour are part of the capability.
+
+Three states are used throughout:
+
+| State | Meaning |
+| --- | --- |
+| **Match** | Scene must reproduce the behaviour a KRunner user depends on |
+| **Exceed** | Scene must do something KRunner architecturally cannot |
+| **Decline** | Scene deliberately will not reproduce it; the reason is stated |
+
+"Decline" is not a backlog item. It is a decision, and each one is justified
+below. A declined capability must still be *reported* honestly when a user
+searches for it, rather than silently returning nothing.
+
+## 2. Verified baseline
+
+The inventory below was read from this development machine — Fedora 44,
+Plasma 6.7.4, `plasma-workspace-6.7.4-1.fc44.x86_64` — by listing
+`/usr/lib64/qt6/plugins/kf6/krunner/*.so` and
+`/usr/share/krunner/dbusplugins/*.desktop`. It is what KRunner actually ships
+here, not what upstream documents.
+
+**31 runners: 25 compiled plugins and 6 D-Bus runners.**
+
+Runner *descriptions* below are the established behaviour of these long-stable
+KDE components; only the inventory itself is machine-verified. Anything that
+turns out to differ in practice should be corrected here rather than worked
+around in code.
+
+### 2.1 Architectural findings
+
+Three properties of KRunner shape this whole plan. All three were verified
+directly.
+
+**The UI cannot be restyled without recompiling.** In Plasma 5 the launcher
+QML was an editable file under
+`/usr/share/plasma/shells/…/contents/runcommand/`. In 6.7 it is compiled into
+the binary as a QML module resource:
+
+```
+$ strings /usr/bin/krunner | grep qml
+RunCommand 254.0 qml/RunCommand.qml
+```
+
+What remains user-configurable is the Plasma Style SVGs, the colour scheme,
+fonts, and two keys in `krunnerrc` (`FreeFloating`, `RetainPriorSearch`).
+
+**A runner cannot report a result.** The extension contract is:
+
+```
+org.kde.krunner1
+  .Match    s  → a(sssida{sv})    query in, matches out
+  .Run      ss → ·                 matchId, actionId → void
+  .Actions  ·  → a(sss)
+  .Config   ·  → a{sv}
+  .Teardown ·  → ·
+```
+
+`Run` returns nothing. There is no channel for success, failure, output,
+progress, or cancellation, and no way to interpose a confirmation step before
+execution. KRunner is fire-and-forget by design.
+
+**Consequently, three of Scene's product principles cannot be expressed as a
+KRunner runner at all**: principle 4 (visible consequences), principle 5 (safe
+by default / explicit confirmation), and the bounded-execution requirements of
+`PRODUCT_PLAN.md` Milestone 3. This is the substantive reason Scene is a
+separate application rather than a set of runners, and it is also where
+"better than KRunner" is earned rather than asserted.
+
+### 2.2 Runner inventory
+
+#### Launching and finding things
+
+| Runner | Capability | Scene disposition |
+| --- | --- | --- |
+| `krunner_services` | Installed applications from `.desktop` entries | Match — P1 |
+| `kwin-runner-windows` *(D-Bus)* | Switch to an open window | Match — P3 |
+| `plasma-runner-baloosearch` *(D-Bus)* | File search by name and content | Match — P4 |
+| `krunner_recentdocuments` | Recently opened documents | Match — P4 |
+| `krunner_placesrunner` | KDE Places / bookmarked folders | Match — P4 |
+| `krunner_bookmarksrunner` | Browser bookmarks | Match — P4 |
+| `plasma-runner-browsertabs` *(D-Bus)* | Open browser tabs | Decline — §6 |
+| `plasma-runner-browserhistory` *(D-Bus)* | Browser history | Decline — §6 |
+| `krunner_appstream` | Applications available to install | Match — P5 |
+| `locations` | Open a path, URL, or `mailto:` | Match — P1 |
+| `helprunner` | KDE documentation lookup | Decline — §6 |
+
+#### Computing and converting
+
+| Runner | Capability | Scene disposition |
+| --- | --- | --- |
+| `calculator` | Arithmetic, including `=` prefix | Match — P2 |
+| `unitconverter` | Unit and currency conversion | Match — P2 |
+| `org.kde.datetime` | Current date/time, timezone conversion | Match — P2 |
+| `krunner_colors` | Colour code conversion and preview | Match — P2 |
+| `krunner_charrunner` | Special character by code point | Match — P2 |
+| `krunner_dictionary` | Word definitions | Decline — §6 |
+| `krunner_spellcheck` | Spelling suggestions | Decline — §6 |
+
+#### System, session, and settings
+
+| Runner | Capability | Scene disposition |
+| --- | --- | --- |
+| `krunner_systemsettings` | Open a System Settings module | Match — P3 |
+| `krunner_powerdevil` | Suspend, hibernate, brightness | Match + Exceed — P3 |
+| `krunner_sessions` | Log out, switch user, lock | Match + Exceed — P3 |
+| `krunner_kill` | Find and terminate a process | Match + Exceed — P3 |
+| `krunner_keys` | Trigger a configured global shortcut | Match — P3 |
+| `krunner_kwin` | KWin scripting actions | Decline — §6 |
+| `krunner_plasma-desktop` | Plasma desktop actions | Decline — §6 |
+| `plasma-runnners-activities` *(D-Bus)* | Switch KDE Activity | Match — P6 |
+
+#### Commands and the web
+
+| Runner | Capability | Scene disposition |
+| --- | --- | --- |
+| `krunner_shell` | Run an arbitrary shell command | **Redesign** — §5.4 |
+| `krunner_webshortcuts` | Keyworded web search (`gg:`, `wp:`) | Match — P2 |
+
+#### Application-specific
+
+| Runner | Capability | Scene disposition |
+| --- | --- | --- |
+| `krunner_katesessions` | Open a Kate session | Decline — §6 |
+| `krunner_konsoleprofiles` | Open a Konsole profile | Decline — §6 |
+| `org.kde.neochat` *(D-Bus)* | Open a Matrix room | Decline — §6 |
+
+## 3. Cross-cutting requirements
+
+These apply to every provider and are not restated per milestone. A parity
+milestone is not complete unless these hold for the providers it adds.
+
+### 3.1 Performance
+
+KRunner is fast and users notice regressions immediately. Targets are set
+after a baseline exists (`PRODUCT_PLAN.md` §10), but the shape is fixed:
+
+- [ ] Activation to a focused, typeable search field is not perceptibly slower
+      than KRunner on the same machine, measured cold and warm.
+- [ ] No provider blocks the UI thread. A slow provider delays only its own
+      results.
+- [ ] Results for a keystroke either arrive or are superseded; a stale query's
+      results never overwrite a newer query's.
+- [ ] Every provider has a timeout, and exceeding it is a visible state rather
+      than a silently missing result group.
+- [ ] Idle memory is measured and recorded; a resident launcher that costs
+      more than KRunner needs a stated reason.
+
+### 3.2 Ranking
+
+- [ ] Ranking is deterministic: the same query against the same index gives
+      the same order.
+- [ ] Provider priority is explicit and configurable, not an accident of
+      registration order.
+- [ ] Exact and prefix matches outrank fuzzy matches; title matches outrank
+      keyword matches.
+- [ ] History and frequency adjust ranking only after the deterministic
+      baseline is in place, and can be disabled.
+
+### 3.3 Failure behaviour
+
+- [ ] A provider that throws, times out, or returns malformed data is
+      isolated. Other result groups and the launcher shell keep working.
+- [ ] A failed provider is reported in the UI, not silently dropped.
+- [ ] A capability that is unavailable on this session says so, in words, when
+      the user searches for it.
+
+### 3.4 Accessibility and input
+
+Inherited from `PRODUCT_PLAN.md` §4 and applied to every new result type:
+
+- [ ] New result types carry correct accessible names, roles, and descriptions.
+- [ ] Selected state is distinguishable without relying on hue.
+- [ ] Every new action is reachable and executable by keyboard alone.
+- [ ] Reduced-motion and high-contrast preferences are respected.
+
+## 4. Parity milestones
+
+### P1 — Application and location launching
+
+**Rides on:** `M2` — Application discovery and launching
+**Replaces:** `krunner_services`, `locations`
+
+**Outcome:** A user can find and launch any installed application, and open
+any path or URL, at least as reliably as with KRunner.
+
+- [ ] Discover `.desktop` entries from all XDG data directories, honouring
+      `NoDisplay`, `Hidden`, `OnlyShowIn` / `NotShowIn`, and `TryExec`.
+- [ ] Index asynchronously; the launcher is usable while indexing runs.
+- [ ] Watch the application directories and re-index on change, without a
+      restart.
+- [ ] Match on name, generic name, comment, keywords, and executable name.
+- [ ] Render the real themed icon, with a deterministic fallback.
+- [ ] Launch through the desktop application model, not a bare `exec`, so
+      startup notification and scope are correct.
+- [ ] Support a `.desktop` entry's declared additional actions.
+- [ ] Open paths, `file://`, `http(s)://`, and `mailto:` URIs.
+- [ ] Report a launch failure in the UI, distinguishing missing executable,
+      permission denied, and non-zero exit.
+
+### P2 — Answers and keyword syntax
+
+**Rides on:** `M3` — Safe command and integration framework
+**Replaces:** `calculator`, `unitconverter`, `org.kde.datetime`,
+`krunner_colors`, `krunner_charrunner`, `krunner_webshortcuts`
+
+**Outcome:** Queries that have an answer produce the answer inline, and
+keyworded queries reach the right provider.
+
+- [ ] A query-parsing layer that recognises provider keywords and prefixes
+      without hard-coding them into the UI.
+- [ ] Arithmetic, including an explicit `=` prefix, with the result
+      copyable to the clipboard.
+- [ ] Unit conversion across at least length, mass, temperature, area,
+      volume, time, and data.
+- [ ] Current date and time, and conversion between named timezones.
+- [ ] Colour conversion between hex, RGB, and HSL, with a visible swatch that
+      is also labelled in text.
+- [ ] Character lookup by Unicode code point and by name.
+- [ ] Web shortcuts with user-configurable keywords, seeded from the user's
+      existing KDE web shortcuts where they can be read.
+- [ ] An answer result states its provider, so an unexpected answer is
+      traceable.
+
+### P3 — Session, system, and windows
+
+**Rides on:** `M3` — Safe command and integration framework
+**Replaces:** `krunner_systemsettings`, `krunner_powerdevil`,
+`krunner_sessions`, `krunner_kill`, `krunner_keys`, `kwin-runner-windows`
+
+**Outcome:** A user can reach system state and open windows from the
+launcher, and destructive actions are confirmed rather than fired blind.
+
+- [ ] List and switch to open windows, showing application, title, and
+      desktop/activity.
+- [ ] Open a named System Settings module.
+- [ ] Power actions: suspend, hibernate, lock, log out, reboot, shut down.
+- [ ] **Exceed:** every power and session action is confirmed, naming the
+      consequence, before anything happens.
+- [ ] Find a process by name and terminate it.
+- [ ] **Exceed:** process termination is confirmed, naming the process and
+      PID, and reports whether the signal actually took effect.
+- [ ] Trigger a configured KDE global shortcut by name.
+- [ ] All of the above degrade to a clear unsupported-capability result on a
+      non-Plasma session rather than failing obscurely.
+
+### P4 — Files, places, and history
+
+**Rides on:** `M3` — Safe command and integration framework
+**Replaces:** `plasma-runner-baloosearch`, `krunner_recentdocuments`,
+`krunner_placesrunner`, `krunner_bookmarksrunner`
+
+**Outcome:** A user can find their own files and folders as readily as their
+applications.
+
+- [ ] File search by name, with content search where an index is available.
+- [ ] Use the existing Baloo index when it is present and enabled; report
+      plainly when it is not, and do not silently build a competing index.
+- [ ] Recently opened documents.
+- [ ] KDE Places entries, including remote and removable entries, with
+      unmounted targets marked as such.
+- [ ] Browser bookmarks from at least one Firefox-family and one
+      Chromium-family profile, read-only, with the profile named in the UI.
+- [ ] File results offer open, open-containing-folder, and copy-path actions.
+- [ ] File-content search is off by default and its privacy implication is
+      stated where it is enabled.
+
+### P5 — Packages and installable applications
+
+**Rides on:** `M4` — Distro capability adapters
+**Replaces:** `krunner_appstream`
+
+**Outcome:** A user can find an application they do not yet have, and install
+it deliberately.
+
+- [ ] Search available packages through the detected package manager.
+- [ ] Show package metadata: version, size, repository, summary.
+- [ ] Distinguish installed from available in the result itself.
+- [ ] Offer install and remove **only** behind explicit confirmation naming
+      the operation and target.
+- [ ] Escalate privilege through the desktop's supported mechanism, never by
+      assuming `sudo`.
+- [ ] Report the real outcome, including permission failure, missing tool, and
+      non-zero exit — never success merely because a process started.
+- [ ] The launcher's core behaviour is unaffected when no adapter is usable.
+
+### P6 — Shell parity and daily-driver readiness
+
+**Rides on:** `M6` — KDE replacement foundation
+**Replaces:** `plasma-runnners-activities`; closes the remaining shell gaps
+
+**Outcome:** Scene is what the user actually reaches for, and KRunner's
+shortcut can be reassigned without regret.
+
+- [ ] Command history: recall, re-run, and clear, with history off-by-default
+      or clearable in one action.
+- [ ] Per-provider enable/disable and reordering in a settings surface.
+- [ ] Inline actions on results, reachable by keyboard.
+- [ ] Switch KDE Activity.
+- [ ] Autostart integration so Scene is resident and warm at login.
+- [ ] Single-instance activation stays correct under rapid repeated toggling.
+- [ ] A documented migration note covering what a KRunner user gains, loses,
+      and must reconfigure.
+- [ ] Manual daily-driver validation: KRunner unbound for one week, with the
+      gaps encountered recorded in this document.
+
+## 5. Where Scene must exceed KRunner
+
+Parity alone does not justify a new application. These four are the reasons
+Scene exists, and each is architecturally impossible as a KRunner runner.
+
+### 5.1 Visible execution state
+
+KRunner's `Run` returns `void`. Scene must show, for any action that is not
+instantaneous: that it is running, its output, its exit status, and its
+failure reason. This is `PRODUCT_PLAN.md` principle 4, and it is the single
+largest functional difference.
+
+### 5.2 Confirmation before consequence
+
+KRunner executes the selected match immediately. Scene must interpose an
+explicit confirmation for any action that changes durable system state,
+naming the operation and its target, and must not allow keyboard ambiguity or
+a stale selection to bypass it.
+
+### 5.3 Bounded execution
+
+Every Scene action declares a timeout, an output limit, and cancellation
+behaviour. A long-running action can be cancelled from the launcher. KRunner
+has nowhere to express any of this.
+
+### 5.4 A safe replacement for `krunner_shell`
+
+`krunner_shell` turns arbitrary query text into a shell command. Scene's
+safety model (`PRODUCT_PLAN.md` §6) forbids exactly that, so this is a
+redesign rather than a match or a decline:
+
+- [ ] Shell execution is never implicit. Typing text that happens to name a
+      binary does not offer to run it as a shell command.
+- [ ] An explicit, clearly-marked command action exists, with a declared
+      executable, arguments, environment, working directory, timeout, and
+      output limit.
+- [ ] It shows the exact argument vector that will be executed, unexpanded,
+      before running it.
+- [ ] It requires confirmation.
+- [ ] Its output, exit status, and failure reason are visible afterwards.
+
+This is deliberately less convenient than `krunner_shell` for the user who
+wants a one-keystroke shell. That trade is the product's position, and the
+migration note in P6 must say so plainly rather than implying parity.
+
+## 6. Declined capabilities
+
+Each of these is a decision, not an omission. When a user's query clearly
+targets one, Scene should say the capability is not provided rather than
+return nothing.
+
+| Capability | Reason |
+| --- | --- |
+| Browser tabs, browser history | Requires a live browser extension channel per browser family; ongoing maintenance cost is disproportionate to the benefit, and history search carries a privacy cost the launcher should not take on by default. Bookmarks (P4) cover the durable, read-only subset. |
+| Dictionary, spellcheck | Better served by the tools already focused on them; no launcher-specific advantage. |
+| KDE help documentation | Narrow audience; `locations` (P1) already opens help URLs. |
+| KWin scripting actions, Plasma desktop actions | Deeply Plasma-shell-internal, with no stable cross-desktop contract. Reconsider only if a specific action proves load-bearing in P6 validation. |
+| Kate sessions, Konsole profiles, Matrix rooms | Per-application integrations. The right long-term answer is the integration contract from `M3`, so third parties can add them — not built-in special cases. |
+
+## 7. Proving parity
+
+Parity is a claim about behaviour, so it needs evidence, not a checked box.
+
+- [ ] Each `P` milestone has automated tests for its ranking, parsing, and
+      failure paths, per `PRODUCT_PLAN.md` §9.
+- [ ] A recorded comparison run: a fixed set of representative queries issued
+      to both KRunner and Scene on the same machine, with results and latency
+      captured side by side.
+- [ ] Every **Decline** is confirmed still-correct at P6, or moved.
+- [ ] Every **Exceed** has a test proving the KRunner-impossible behaviour
+      actually happens — a confirmation that blocks, output that appears, a
+      cancellation that takes effect.
+- [ ] The daily-driver week in P6 is completed and its findings recorded here.
+
+Progress is reported against these checklists using the same distinction the
+product plan requires: implemented, verified, manually validated, unsupported,
+and deferred are different states and must not be conflated.

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Scene
+GenericName=Launcher
+Comment=Fast, keyboard-first launcher
+Exec=scene
+Icon=system-search
+Terminal=false
+Categories=Utility;
+Keywords=launcher;search;run;command;
+StartupNotify=false
