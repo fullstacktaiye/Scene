@@ -616,12 +616,29 @@ validated reproducibly on its supported Linux targets.
 - [ ] Fedora package.
 - [ ] Debian package.
 - [ ] Arch package.
-- [ ] User-level autostart configuration.
+- [x] User-level autostart configuration.
 - [ ] Versioned configuration migration.
 - [ ] Reproducible development and packaging instructions.
-- [ ] Focused unit, hermetic integration, and UI smoke suites.
+- [x] Focused unit, hermetic integration, and UI smoke suites.
 - [ ] Startup, indexing, search-latency, and idle-memory measurements.
 - [ ] Release documentation includes known desktop and capability limits.
+
+Two Milestone 8 deliverables arrived with Milestone 6 and are complete
+independently of the remaining packaging work. Scene Settings can atomically
+install or remove a user autostart entry that launches the installed binary in
+resident `--background` mode; foreground and background startup were exercised
+on KDE Plasma. The automated suite now combines focused ranking, parsing,
+configuration, capability, policy, and failure tests with fake-executable
+subprocess integration tests and an opt-in, isolated GTK keyboard smoke test.
+The smoke test covers activation, focus, searching, navigation, inline actions,
+confirmation, cancellation, status reporting, and repeated presentation.
+
+The configuration file carries a format marker, but there is not yet an
+upgrade path between two real schema versions, so **versioned configuration
+migration remains open**. Likewise, installation instructions and capability
+notes are not substitutes for reproducible distro packages, recorded
+performance measurements, or release documentation; those checklist items
+remain open.
 
 ## 9. Testing and acceptance standards
 
