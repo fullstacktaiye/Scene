@@ -1,0 +1,62 @@
+# Maintainer: Scene contributors <scene@example.invalid>
+#
+# Built offline from the two tarballs scripts/release-tarball.sh produces: the
+# sources, and the crates Cargo.lock resolved. A published release replaces the
+# SKIP entries with the checksums that script prints.
+
+pkgname=scene
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Fast, keyboard-first Linux launcher'
+arch=('x86_64')
+url='https://github.com/fullstacktaiye/Scene'
+license=('MIT')
+depends=('gtk4' 'sqlite' 'hicolor-icon-theme')
+makedepends=('rust' 'pkgconf')
+# makepkg's global LTO puts -flto=auto into CFLAGS, so the C and assembly that
+# `ring`'s build script compiles becomes LTO bitcode that the ordinary Rust
+# link step cannot resolve — every ring_core_* symbol comes back undefined.
+# Cargo decides Scene's own optimisation; makepkg does not need to.
+options=('!lto')
+source=("$pkgname-$pkgver.tar.gz" "$pkgname-$pkgver-vendor.tar.gz")
+sha256sums=('SKIP' 'SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    mkdir -p .cargo
+    cat > .cargo/config.toml <<EOF
+[source.vendored-sources]
+directory = "$srcdir/vendor"
+
+[source.crates-io]
+replace-with = "vendored-sources"
+EOF
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export CARGO_TARGET_DIR=target
+    # Debug info has to be set on the profile rather than through makepkg's
+    # DEBUG_RUSTFLAGS: cargo passes the profile's own -Cdebuginfo after
+    # $RUSTFLAGS, so the flag loses and the debug package ends up empty.
+    CARGO_PROFILE_RELEASE_DEBUG=2 cargo build --release --locked --offline
+}
+
+# Scene's own suite. The GTK smoke test prints its reason and passes where
+# there is no display, which is every build environment.
+check() {
+    cd "$pkgname-$pkgver"
+    export CARGO_TARGET_DIR=target
+    cargo test --release --locked --offline
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm0755 target/release/scene "$pkgdir/usr/bin/scene"
+    install -Dm0644 data/dev.scene.Scene.desktop "$pkgdir/usr/share/applications/dev.scene.Scene.desktop"
+    install -Dm0644 data/dev.scene.Scene.metainfo.xml "$pkgdir/usr/share/metainfo/dev.scene.Scene.metainfo.xml"
+    install -Dm0644 data/dev.scene.Scene.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.scene.Scene.svg"
+    install -Dm0644 data/scene.1 "$pkgdir/usr/share/man/man1/scene.1"
+    install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm0644 LICENSE.dependencies "$pkgdir/usr/share/licenses/$pkgname/LICENSE.dependencies"
+}

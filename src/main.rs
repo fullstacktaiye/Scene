@@ -1,6 +1,7 @@
 mod actions;
 mod apps;
 mod integrations;
+mod measure;
 mod packages;
 mod platform;
 mod search;
@@ -9,6 +10,7 @@ mod ui;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -16,8 +18,18 @@ use gtk::{gio, glib};
 const APP_ID: &str = "dev.scene.Scene";
 
 fn main() -> glib::ExitCode {
+    // Before anything else, because startup is one of the things Scene
+    // measures about itself.
+    let started = Instant::now();
+
     let background = std::env::args().any(|argument| argument == "--background");
-    let flags = if background {
+    // `--measure` reports this machine's startup, indexing, latency and memory
+    // and then exits. It is deliberately NON_UNIQUE: handing over to a
+    // resident Scene would measure that process's age instead of a start.
+    let measuring = std::env::args().any(|argument| argument == "--measure");
+    let flags = if measuring {
+        gio::ApplicationFlags::NON_UNIQUE
+    } else if background {
         gio::ApplicationFlags::IS_SERVICE
     } else {
         gio::ApplicationFlags::FLAGS_NONE
@@ -31,6 +43,10 @@ fn main() -> glib::ExitCode {
 
     let hold = background_hold.clone();
     app.connect_startup(move |app| {
+        // Once per process, before anything reads configuration: loading it
+        // happens again on every keystroke, so upgrading the file cannot live
+        // there.
+        integrations::migrate_configuration();
         ui::load_styles();
 
         if background {
@@ -53,6 +69,10 @@ fn main() -> glib::ExitCode {
     // resets it rather than stacking up windows.
     let launcher: Rc<RefCell<Option<Rc<ui::Launcher>>>> = Rc::new(RefCell::new(None));
     app.connect_activate(move |app| {
+        if measuring {
+            measure::run(app, started);
+            return;
+        }
         let existing = launcher.borrow().clone();
         let window = match existing {
             Some(window) => window,

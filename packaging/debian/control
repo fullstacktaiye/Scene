@@ -1,0 +1,32 @@
+Source: scene
+Section: utils
+Priority: optional
+Maintainer: Scene contributors <scene@example.invalid>
+Build-Depends: debhelper-compat (= 13),
+               cargo (>= 1.92),
+               rustc (>= 1.92),
+               libgtk-4-dev,
+               libsqlite3-dev,
+               pkg-config
+Standards-Version: 4.7.0
+Homepage: https://github.com/fullstacktaiye/Scene
+Rules-Requires-Root: no
+
+Package: scene
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, hicolor-icon-theme
+Description: fast, keyboard-first Linux launcher
+ Scene is a keyboard-first launcher for Linux, built as one Rust binary
+ against native GTK 4 and aimed at KDE Plasma on Wayland first. Activate it,
+ type, and it ranks installed applications, folders, links, calculations,
+ package queries and its own commands in one deterministic list.
+ .
+ System actions are typed and bounded rather than free-form shell commands.
+ Every command Scene will run is shown before it runs, work that changes the
+ system is confirmed first and escalates through the desktop's own
+ authorisation agent, and the launcher reports what it actually observed: an
+ unavailable tool, a permission failure, a timeout, a cancellation, or a
+ non-zero exit.
+ .
+ The Rust crates Scene depends on are linked statically into the binary. Their
+ licences are listed in /usr/share/doc/scene/LICENSE.dependencies.

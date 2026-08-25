@@ -19,7 +19,8 @@
 # install rewrites that to the absolute path of the binary it just installed,
 # because a desktop session's PATH is not a login shell's.
 #
-# Packaging proper is Milestone 8. This is the development path only.
+# This is the development path. Real packages come from scripts/package.sh,
+# and install the same layout under /usr; see docs/packaging.md.
 
 set -eu
 
@@ -29,6 +30,8 @@ cargo_home=${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}
 binary=$cargo_home/bin/scene
 applications=$data_home/applications
 metainfo=$data_home/metainfo
+icons=$data_home/icons/hicolor/scalable/apps
+manuals=$data_home/man/man1
 
 echo "Installing Scene from $root"
 
@@ -37,7 +40,7 @@ echo "Installing Scene from $root"
 CARGO_TARGET_DIR=$root/target cargo install --path "$root" --force --quiet
 echo "  binary        $binary"
 
-mkdir -p "$applications" "$metainfo"
+mkdir -p "$applications" "$metainfo" "$icons" "$manuals"
 
 entry=$applications/dev.scene.Scene.desktop
 {
@@ -49,6 +52,14 @@ echo "  desktop entry $entry"
 
 cp "$root/data/dev.scene.Scene.metainfo.xml" "$metainfo/dev.scene.Scene.metainfo.xml"
 echo "  metainfo      $metainfo/dev.scene.Scene.metainfo.xml"
+
+# The desktop entry names Scene's own icon, so a development install has to
+# put it where the icon theme will find it or the shortcut has no icon.
+cp "$root/data/dev.scene.Scene.svg" "$icons/dev.scene.Scene.svg"
+echo "  icon          $icons/dev.scene.Scene.svg"
+
+cp "$root/data/scene.1" "$manuals/scene.1"
+echo "  manual        $manuals/scene.1"
 
 if command -v desktop-file-validate >/dev/null 2>&1; then
     desktop-file-validate "$entry"

@@ -1,0 +1,123 @@
+.TH SCENE 1 "2026-08-24" "scene 0.1.0" "User Commands"
+.SH NAME
+scene \- fast, keyboard\-first Linux launcher
+.SH SYNOPSIS
+.B scene
+.RB [ \-\-background ]
+.RB [ \-\-measure ]
+.SH DESCRIPTION
+.B Scene
+is a keyboard\-first launcher for Linux, built as one binary against native
+GTK 4 and aimed at KDE Plasma on Wayland first. Activate it, type, and it ranks
+installed applications, folders, links, calculations, package queries and its
+own commands in one deterministic list.
+.PP
+Scene is a single\-instance application. Activating it while it is hidden
+presents a focused launcher with a cleared query; activating it again hides the
+same window. It never leaves a second launcher process or window behind.
+.PP
+System actions are typed and bounded rather than free\-form shell commands.
+Search text is never interpreted as a command: a provider registers a fixed
+program and argument vector, and nothing assembles one from what was typed.
+Work that changes the system is confirmed first and escalates through
+.BR pkexec (1),
+so the desktop's own authorisation agent asks. Scene reports what it observed —
+an unavailable tool, a permission failure, a timeout, a cancellation, or a
+non\-zero exit — and distinguishes a program it watched finish from one it
+started and handed over.
+.SH OPTIONS
+.TP
+.B \-\-background
+Stay resident without presenting a window, so a global shortcut has a warm
+process to activate. This is what the autostart entry Scene Settings installs
+uses.
+.TP
+.B \-\-measure
+Print this machine's startup, indexing, search\-latency and resident\-memory
+figures and exit. A development tool: it runs its own process rather than
+handing over to a resident Scene, so what it measures is a start. It presents
+the window it is timing, so it needs a graphical session.
+.SH KEYS
+.TP
+.B Up, Down
+Move the selection, wrapping at either end.
+.TP
+.B Enter
+Run the selected result, or confirm a mutating action that asked first.
+.TP
+.B Escape
+Clear the query; cancel a running action; withdraw a confirmation; on an empty
+query, hide the launcher.
+.TP
+.B Ctrl+K
+Open the selected result's other actions.
+.TP
+.B Ctrl+,
+Open Scene Settings: shortcut and Copilot\-key status, providers, history and
+autostart.
+.TP
+.B Ctrl+Q
+Quit.
+.SH ENVIRONMENT
+.TP
+.B SCENE_DIRECTORY
+Directory the configured\-directory provider opens. Overrides the configured
+value for one session and is never written back.
+.TP
+.B SCENE_HISTORY
+Set to
+.BR off ,
+.BR 0 ,
+.B no
+or
+.B false
+to switch off the recent/frequent ranking adjustment for one session.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/scene/config.ini
+Configuration: the configured directory, provider order and enable state, and
+the history switches. Its
+.B [format]
+section names the version it was written in; Scene upgrades an older file at
+startup and keeps the previous one beside it as
+.IR config.ini.format\-N .
+.TP
+.I $XDG_STATE_HOME/scene/history
+What has been run, and when, for the recent/frequent ranking adjustment. Its
+first line names its format version.
+.TP
+.I $XDG_CACHE_HOME/scene/eurofxref\-daily.xml
+Cached European Central Bank reference rates for currency conversion.
+.TP
+.I $XDG_CONFIG_HOME/autostart/dev.scene.Scene.desktop
+Written and removed by Scene Settings when user\-level autostart is switched on
+or off.
+.SH NOTES
+A Wayland client cannot place its own window. On KDE Plasma centring is a KWin
+setting — System Settings, Window Management, Window Behavior, Advanced, Window
+placement — rather than something Scene can assert, and Scene reports the limit
+instead of simulating placement.
+.PP
+KDE owns the global shortcut. Scene's desktop entry proposes
+.B Meta+Space
+as a fallback and Scene reads the binding KDE actually recorded; it never writes
+.IR kglobalshortcutsrc .
+Starting
+.B scene
+from a shell gets no activation token, so its window opens behind others; the
+global shortcut is the path that works.
+.PP
+The Copilot key is a
+.B Shift+Super+F23
+chord emitting
+.BR XF86Assistant ,
+which KDE's Qt\-based recorder cannot bind. Scene detects and reports what it
+observes rather than promising support.
+.SH SEE ALSO
+.BR pkexec (1),
+.BR desktop\-file\-validate (1)
+.PP
+The product plan, the KRunner parity track and the packaging notes ship with the
+source at
+.UR https://github.com/fullstacktaiye/Scene
+.UE .

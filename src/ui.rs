@@ -629,6 +629,22 @@ impl Launcher {
         self.entry.grab_focus();
     }
 
+    /// Run `callback` once the window has actually put a frame on the screen.
+    ///
+    /// `present` returning is not that moment: it hands the surface to the
+    /// compositor, and the frame clock is what reports it being drawn. Only
+    /// `--measure` needs the difference, and measuring the wrong instant would
+    /// flatter the number.
+    pub fn on_first_frame(&self, callback: impl FnOnce() + 'static) {
+        let callback = RefCell::new(Some(callback));
+        self.window.add_tick_callback(move |_, _| {
+            if let Some(callback) = callback.borrow_mut().take() {
+                callback();
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
     /// Desktop activation is a toggle. A Copilot test is the one exception:
     /// while armed, another activation is itself the observed desktop action.
     pub fn activate(&self) {

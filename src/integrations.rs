@@ -42,6 +42,37 @@ pub struct DirectoryConfig {
     pub path: PathBuf,
 }
 
+/// The configuration format this Scene writes.
+///
+/// Bump it when the meaning of a key changes, not when a key is added: an
+/// unknown key is ignored and a missing one falls back to its default, so an
+/// addition needs no migration. A rename or a changed meaning does.
+///
+/// **1 to 2.** `general/history-enabled` became `general/ranking-history-enabled`,
+/// because it governs the recent/frequent ranking adjustment and sat one word
+/// away from `command-history-enabled`, which is a provider. The per-provider
+/// `priority` integers became one `general/provider-order` list: reordering
+/// wrote dense positions (0, 1, 2 and so on) into a file whose defaults are
+/// spaced (10, 20, 30), so a provider a later Scene added arrived in the middle
+/// of an order the user had chosen. A list says what the user chose, and
+/// nothing about what they never saw.
+const FORMAT_VERSION: i32 = 2;
+
+/// What the configuration file on disk turned out to be. Scene reads a file it
+/// may not have written rather than assuming its own format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// No file yet, so the defaults are in use and nothing needs upgrading.
+    Absent,
+    /// Already the format this Scene writes.
+    Current,
+    /// An older format, read through its own rules and upgraded in memory.
+    Upgraded { from: i32 },
+    /// A newer Scene wrote it. This one reads what it recognises and never
+    /// replaces the file without keeping a copy.
+    Newer { version: i32 },
+}
+
 /// Configuration is explicit, typed, versioned, and persisted under the XDG
 /// configuration directory. Environment overrides remain useful for tests and
 /// one-off sessions.
@@ -56,57 +87,148 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Self {
+        Self::read().0
+    }
+
+    /// Reading never writes, because it happens again for every keystroke that
+    /// reaches `answers`. Upgrading the file is [`migrate_configuration`],
+    /// which runs once, from `main`.
+    fn read() -> (Self, Format) {
+        let (mut config, format) = Self::read_file();
+
+        // Environment overrides sit outside the file's format deliberately.
+        // They are for one session or one test, and are never written back.
+        if let Some(directory) = std::env::var_os("SCENE_DIRECTORY") {
+            config.directory = DirectoryConfig {
+                path: PathBuf::from(directory),
+            };
+        }
+        if let Ok(value) = std::env::var("SCENE_HISTORY") {
+            config.history_enabled = !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "off" | "0" | "no" | "false"
+            );
+        }
+        (config, format)
+    }
+
+    /// The file alone, with no environment override applied. What a migration
+    /// writes back has to be what the file said: `SCENE_HISTORY=off` for one
+    /// session must not become a stored setting the user never chose.
+    fn read_file() -> (Self, Format) {
+        let file = glib::KeyFile::new();
+        let present = config_path()
+            .is_some_and(|path| file.load_from_file(path, glib::KeyFileFlags::NONE).is_ok());
+        Self::interpret(&file, present)
+    }
+
+    /// Interpreting a loaded key file is separate from reading one, so every
+    /// migration is tested without touching the user's configuration.
+    fn interpret(file: &glib::KeyFile, present: bool) -> (Self, Format) {
+        let format = if present {
+            // A file without a version is the first format, which never wrote
+            // one.
+            match file.integer("format", "version").unwrap_or(1) {
+                version if version == FORMAT_VERSION => Format::Current,
+                version if version < FORMAT_VERSION => Format::Upgraded { from: version },
+                version => Format::Newer { version },
+            }
+        } else {
+            Format::Absent
+        };
+        let from_version_one = matches!(format, Format::Upgraded { from } if from < 2);
+
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
-        let file = glib::KeyFile::new();
-        if let Some(path) = config_path() {
-            let _ = file.load_from_file(path, glib::KeyFileFlags::NONE);
-        }
-        let configured_directory = file
+        let directory = file
             .string("general", "directory")
             .ok()
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.clone());
-        let directory = std::env::var_os("SCENE_DIRECTORY")
-            .map(PathBuf::from)
-            .unwrap_or(configured_directory);
-        let history_enabled = std::env::var("SCENE_HISTORY")
-            .ok()
-            .map(|value| {
-                !matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "off" | "0" | "no" | "false"
+            .unwrap_or(home);
+
+        let history_enabled = if from_version_one {
+            file.boolean("general", "history-enabled")
+        } else {
+            file.boolean("general", "ranking-history-enabled")
+        }
+        .unwrap_or(true);
+
+        let order = if from_version_one {
+            Self::order_from_priorities(file)
+        } else {
+            file.string_list("general", "provider-order")
+                .map(|list| list.iter().map(|id| id.to_string()).collect())
+                .unwrap_or_default()
+        };
+
+        (
+            Self {
+                directory: DirectoryConfig { path: directory },
+                providers: Self::preferences(file, &order),
+                history_enabled,
+                command_history_enabled: file
+                    .boolean("general", "command-history-enabled")
+                    .unwrap_or(false),
+                file_content_enabled: file
+                    .boolean("general", "file-content-enabled")
+                    .unwrap_or(false),
+            },
+            format,
+        )
+    }
+
+    /// Version 1 spread the order across a `priority` integer in every
+    /// provider's own group. Read those back into the order they described.
+    fn order_from_priorities(file: &glib::KeyFile) -> Vec<String> {
+        let mut ordered: Vec<(u16, String)> = provider_metadata()
+            .into_iter()
+            .filter_map(|metadata| {
+                let priority = file
+                    .integer(&format!("provider {}", metadata.id), "priority")
+                    .ok()?;
+                Some((u16::try_from(priority).ok()?, metadata.id.to_string()))
+            })
+            .collect();
+        ordered.sort();
+        ordered.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// The order the user chose comes first, and a provider it never named —
+    /// one a later Scene added — follows in the order Scene ships it, rather
+    /// than appearing in the middle of an order the user arranged.
+    fn preferences(file: &glib::KeyFile, order: &[String]) -> BTreeMap<String, ProviderPreference> {
+        let metadata = provider_metadata();
+        let mut positions: Vec<&'static str> = Vec::with_capacity(metadata.len());
+        for id in order {
+            if let Some(known) = metadata.iter().find(|candidate| candidate.id == id)
+                && !positions.contains(&known.id)
+            {
+                positions.push(known.id);
+            }
+        }
+        let mut unnamed: Vec<&Metadata> = metadata
+            .iter()
+            .filter(|candidate| !positions.contains(&candidate.id))
+            .collect();
+        unnamed.sort_by_key(|candidate| (candidate.default_priority, candidate.id));
+        positions.extend(unnamed.into_iter().map(|candidate| candidate.id));
+
+        positions
+            .into_iter()
+            .enumerate()
+            .map(|(position, id)| {
+                (
+                    id.to_string(),
+                    ProviderPreference {
+                        enabled: file
+                            .boolean(&format!("provider {id}"), "enabled")
+                            .unwrap_or(true),
+                        priority: position as u16,
+                    },
                 )
             })
-            .unwrap_or_else(|| file.boolean("general", "history-enabled").unwrap_or(true));
-
-        let mut providers = BTreeMap::new();
-        for metadata in provider_metadata() {
-            let group = format!("provider {}", metadata.id);
-            providers.insert(
-                metadata.id.to_string(),
-                ProviderPreference {
-                    enabled: file.boolean(&group, "enabled").unwrap_or(true),
-                    priority: file
-                        .integer(&group, "priority")
-                        .ok()
-                        .and_then(|value| u16::try_from(value).ok())
-                        .unwrap_or(metadata.default_priority),
-                },
-            );
-        }
-        Self {
-            directory: DirectoryConfig { path: directory },
-            providers,
-            history_enabled,
-            command_history_enabled: file
-                .boolean("general", "command-history-enabled")
-                .unwrap_or(false),
-            file_content_enabled: file
-                .boolean("general", "file-content-enabled")
-                .unwrap_or(false),
-        }
+            .collect()
     }
 
     pub fn provider_enabled(&self, id: &str) -> bool {
@@ -156,31 +278,108 @@ impl Config {
         let Some(path) = config_path() else {
             return Ok(());
         };
+        keep_a_newer_format(&path)?;
         atomic_write(&path, self.key_file().to_data().as_bytes())
     }
 
     fn key_file(&self) -> glib::KeyFile {
         let file = glib::KeyFile::new();
-        file.set_integer("format", "version", 1);
+        file.set_integer("format", "version", FORMAT_VERSION);
         file.set_string(
             "general",
             "directory",
             &self.directory.path.to_string_lossy(),
         );
-        file.set_boolean("general", "history-enabled", self.history_enabled);
+        file.set_boolean("general", "ranking-history-enabled", self.history_enabled);
         file.set_boolean(
             "general",
             "command-history-enabled",
             self.command_history_enabled,
         );
         file.set_boolean("general", "file-content-enabled", self.file_content_enabled);
+        // glib's Rust bindings read a list but do not write one, so the list
+        // is written in the format the reader expects: separated, and
+        // terminated, by the key file's own separator.
+        let order = self.ordered_provider_ids().join(";");
+        file.set_string("general", "provider-order", &format!("{order};"));
         for (id, provider) in &self.providers {
-            let group = format!("provider {id}");
-            file.set_boolean(&group, "enabled", provider.enabled);
-            file.set_integer(&group, "priority", i32::from(provider.priority));
+            file.set_boolean(&format!("provider {id}"), "enabled", provider.enabled);
         }
         file
     }
+}
+
+/// Upgrade the configuration file to the format this Scene writes, once, at
+/// startup.
+///
+/// The previous file is kept beside the new one instead of being replaced, so
+/// an upgrade that read something wrong can be diagnosed, and a Scene that was
+/// downgraded again still has the file it understands.
+pub fn migrate_configuration() -> Format {
+    let (config, format) = Config::read_file();
+    let Some(path) = config_path() else {
+        return format;
+    };
+    match format {
+        Format::Upgraded { from } => {
+            let kept = kept_copy(&path, from);
+            if let Err(error) = std::fs::copy(&path, &kept) {
+                eprintln!(
+                    "scene: configuration not upgraded, {} ({error})",
+                    kept.display()
+                );
+                return format;
+            }
+            if let Err(error) = config.save() {
+                eprintln!(
+                    "scene: configuration not upgraded, {} ({error})",
+                    path.display()
+                );
+                return format;
+            }
+            eprintln!(
+                "scene: configuration upgraded from format {from} to {FORMAT_VERSION}; the previous file is {}",
+                kept.display()
+            );
+        }
+        Format::Newer { version } => {
+            eprintln!(
+                "scene: the configuration is format {version}, newer than this Scene's {FORMAT_VERSION}; \
+                 what this Scene does not recognise is left as it is, and kept in a copy if settings are saved"
+            );
+        }
+        Format::Absent | Format::Current => {}
+    }
+    format
+}
+
+/// Never replace a file a newer Scene wrote without keeping it. This Scene
+/// cannot know what a newer one stored, and one settings change should not be
+/// able to discard it silently.
+fn keep_a_newer_format(path: &Path) -> std::io::Result<()> {
+    let file = glib::KeyFile::new();
+    if file.load_from_file(path, glib::KeyFileFlags::NONE).is_err() {
+        return Ok(());
+    }
+    let version = file.integer("format", "version").unwrap_or(1);
+    if version <= FORMAT_VERSION {
+        return Ok(());
+    }
+    let kept = kept_copy(path, version);
+    // The first copy is the one worth keeping: it is the file this Scene has
+    // not overwritten yet.
+    if !kept.exists() {
+        std::fs::copy(path, kept)?;
+    }
+    Ok(())
+}
+
+fn kept_copy(path: &Path, version: i32) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("config.ini"));
+    path.with_file_name(format!("{name}.format-{version}"))
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -262,6 +461,22 @@ pub fn provider_metadata() -> Vec<Metadata> {
 pub fn index() -> Vec<Item> {
     let config = Config::load();
     collect(&config, |provider| provider.search(&config))
+}
+
+/// What each provider's index cost, for `--measure`. The registry owns
+/// `PROVIDERS`, so timing one provider at a time belongs here rather than in
+/// the measurement itself.
+pub fn index_by_provider() -> Vec<(Metadata, std::time::Duration, usize)> {
+    let config = Config::load();
+    PROVIDERS
+        .into_iter()
+        .filter(|provider| config.provider_enabled(provider.metadata().id))
+        .map(|provider| {
+            let start = std::time::Instant::now();
+            let items = provider.search(&config).map(|items| items.len());
+            (provider.metadata(), start.elapsed(), items.unwrap_or(0))
+        })
+        .collect()
 }
 
 /// The providers' answers to one query, ranked alongside the static index.
@@ -413,7 +628,14 @@ fn collect(
                     }
                     items
                 }
-                Err(error) => vec![unavailable_item(metadata, error)],
+                Err(error) => {
+                    let mut item = unavailable_item(metadata, error);
+                    // Its place in the list is where the user put the provider,
+                    // not where it shipped: a provider that failed does not
+                    // move.
+                    item.provider_priority = config.provider_priority(metadata.id);
+                    vec![item]
+                }
             }
         })
         .collect()
@@ -2152,6 +2374,15 @@ fn xbel_entries(path: &Path) -> Result<Vec<(String, Option<String>)>, Integratio
     Ok(entries)
 }
 
+/// Long enough to survive a moment of contention, short enough that indexing
+/// never visibly stalls on a browser.
+const BOOKMARK_LOCK_WAIT: Duration = Duration::from_millis(50);
+
+/// What has to be escaped in the path of a SQLite `file:` URI. Not
+/// `NON_ALPHANUMERIC`, which would escape the separators too.
+const URI_PATH: &percent_encoding::AsciiSet =
+    &percent_encoding::CONTROLS.add(b'?').add(b'#').add(b'%');
+
 fn firefox_bookmarks() -> Vec<Item> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -2167,12 +2398,34 @@ fn firefox_bookmarks() -> Vec<Item> {
             continue;
         }
         let profile_name = profile.file_name().to_string_lossy().into_owned();
+        // Firefox holds a write lock on places.sqlite for as long as it runs,
+        // so a plain read-only connection waits out SQLite's busy timeout —
+        // five seconds in front of every Scene start, measured on this machine
+        // — and then reports that the database is locked. `immutable=1` reads
+        // the file without taking any lock at all, which is what makes
+        // bookmarks available while the browser is open.
+        //
+        // The cost is stated rather than hidden: an immutable read ignores the
+        // write-ahead log, so it sees the last checkpoint. A bookmark added
+        // moments ago can be missing until Firefox writes it back. Stale by a
+        // few minutes beats absent for as long as the browser is running.
+        let uri = format!(
+            "file:{}?immutable=1",
+            utf8_percent_encode(&database.to_string_lossy(), URI_PATH)
+        );
         let Ok(connection) = rusqlite::Connection::open_with_flags(
-            &database,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            &uri,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         ) else {
             continue;
         };
+        // Nothing here should ever wait on a lock: this runs before the window
+        // exists, and a browser that is mid-write is not worth a stall.
+        if connection.busy_timeout(BOOKMARK_LOCK_WAIT).is_err() {
+            continue;
+        }
         let Ok(mut statement) = connection.prepare("SELECT COALESCE(b.title, p.title, p.url), p.url FROM moz_bookmarks b JOIN moz_places p ON p.id = b.fk WHERE b.type = 1 AND p.url IS NOT NULL ORDER BY b.dateAdded DESC LIMIT 500") else { continue };
         let Ok(rows) = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -2932,6 +3185,159 @@ mod tests {
         assert!(matches!(item.action, Action::Message { .. }));
     }
 
+    fn key_file(text: &str) -> glib::KeyFile {
+        let file = glib::KeyFile::new();
+        file.load_from_data(text, glib::KeyFileFlags::NONE)
+            .expect("the fixture is a key file");
+        file
+    }
+
+    /// The first format, as a Scene before Milestone 8 wrote it.
+    const VERSION_ONE: &str = "[format]
+version=1
+
+[general]
+directory=/tmp/scene-configuration-fixture
+history-enabled=false
+command-history-enabled=true
+
+[provider calculator]
+enabled=true
+priority=0
+
+[provider applications]
+enabled=false
+priority=1
+";
+
+    #[test]
+    fn a_version_one_file_is_upgraded_rather_than_read_as_this_format() {
+        let (config, format) = Config::interpret(&key_file(VERSION_ONE), true);
+
+        assert_eq!(format, Format::Upgraded { from: 1 });
+        // Version 1 called this `history-enabled`. Reading the new name here
+        // would silently turn the ranking history back on.
+        assert!(!config.history_enabled);
+        assert!(config.command_history_enabled);
+        assert!(!config.file_content_enabled);
+        assert_eq!(
+            config.directory.path,
+            PathBuf::from("/tmp/scene-configuration-fixture")
+        );
+        assert!(!config.provider_enabled("applications"));
+        assert!(config.provider_enabled("calculator"));
+    }
+
+    #[test]
+    fn the_order_version_one_spread_across_providers_survives_the_upgrade() {
+        let (config, _) = Config::interpret(&key_file(VERSION_ONE), true);
+        let order = config.ordered_provider_ids();
+
+        // What the old file said, in the order it said it.
+        assert_eq!(order[0], "calculator");
+        assert_eq!(order[1], "applications");
+
+        // And what it never mentioned follows, in the order Scene ships it,
+        // instead of landing in the middle of an order the user arranged.
+        let rest = &order[2..];
+        assert!(!rest.contains(&String::from("calculator")));
+        let mut shipped: Vec<_> = provider_metadata()
+            .into_iter()
+            .filter(|metadata| !["calculator", "applications"].contains(&metadata.id))
+            .collect();
+        shipped.sort_by_key(|metadata| (metadata.default_priority, metadata.id));
+        let shipped: Vec<String> = shipped
+            .into_iter()
+            .map(|metadata| metadata.id.to_string())
+            .collect();
+        assert_eq!(rest, shipped.as_slice());
+        assert_eq!(order.len(), provider_metadata().len());
+    }
+
+    #[test]
+    fn a_newer_format_is_read_by_this_format_s_rules_and_says_so() {
+        let (config, format) = Config::interpret(
+            &key_file(
+                "[format]
+version=99
+
+[general]
+history-enabled=false
+ranking-history-enabled=true
+",
+            ),
+            true,
+        );
+
+        assert_eq!(format, Format::Newer { version: 99 });
+        // A newer file is not read through an older format's rules: version
+        // 99's `history-enabled` is whatever version 99 decided it means, and
+        // guessing would be worse than ignoring it.
+        assert!(config.history_enabled);
+    }
+
+    #[test]
+    fn the_current_format_survives_being_written_and_read_back() {
+        let (mut config, format) = Config::interpret(&glib::KeyFile::new(), false);
+        assert_eq!(format, Format::Absent, "no file is not a migration");
+
+        config.history_enabled = false;
+        config.file_content_enabled = true;
+        config.set_provider_enabled("packages", false);
+        config.move_provider("calculator", -30);
+
+        let written = config.key_file().to_data();
+        let (read_back, format) = Config::interpret(&key_file(&written), true);
+
+        assert_eq!(format, Format::Current);
+        assert_eq!(read_back, config);
+        assert_eq!(read_back.ordered_provider_ids()[0], "calculator");
+    }
+
+    #[test]
+    fn saving_over_a_newer_format_keeps_the_file_it_replaces() {
+        let directory = std::env::temp_dir().join(format!(
+            "scene-configuration-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time is after the Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("create the test directory");
+        let path = directory.join("config.ini");
+        let kept = directory.join("config.ini.format-99");
+
+        std::fs::write(
+            &path,
+            "[format]\nversion=99\n\n[general]\ndirectory=/first\n",
+        )
+        .expect("write a newer configuration");
+        keep_a_newer_format(&path).expect("keep a copy");
+        assert!(
+            kept.exists(),
+            "a newer format is copied before it is replaced"
+        );
+
+        // The copy worth keeping is the first one: the file this Scene has not
+        // overwritten yet.
+        std::fs::write(
+            &path,
+            "[format]\nversion=99\n\n[general]\ndirectory=/second\n",
+        )
+        .expect("write it again");
+        keep_a_newer_format(&path).expect("keep the first copy");
+        let contents = std::fs::read_to_string(&kept).expect("read the kept copy");
+        assert!(contents.contains("/first"), "{contents}");
+
+        // This format, and an older one, are Scene's own to rewrite.
+        std::fs::write(&path, "[format]\nversion=1\n").expect("write an older configuration");
+        keep_a_newer_format(&path).expect("nothing to keep");
+        assert!(!directory.join("config.ini.format-1").exists());
+
+        std::fs::remove_dir_all(&directory).expect("remove the test directory");
+    }
+
     #[test]
     fn a_package_keyword_is_recognised_with_its_term() {
         let (capabilities, term) = package_keyword("pkg ripgrep").expect("a package query");
@@ -3263,16 +3669,29 @@ mod tests {
             },
         );
         let file = config.key_file();
-        assert_eq!(file.integer("format", "version"), Ok(1));
+        assert_eq!(file.integer("format", "version"), Ok(FORMAT_VERSION));
         assert_eq!(
             file.string("general", "directory").unwrap(),
             "/tmp/scene configured"
         );
-        assert_eq!(file.boolean("general", "history-enabled"), Ok(false));
+        assert_eq!(
+            file.boolean("general", "ranking-history-enabled"),
+            Ok(false)
+        );
         assert_eq!(file.boolean("general", "command-history-enabled"), Ok(true));
         assert_eq!(file.boolean("general", "file-content-enabled"), Ok(true));
         assert_eq!(file.boolean("provider files", "enabled"), Ok(false));
-        assert_eq!(file.integer("provider files", "priority"), Ok(7));
+
+        // The order is one list the user can read, not an integer hidden in
+        // every provider's own group.
+        assert!(file.integer("provider files", "priority").is_err());
+        let order: Vec<String> = file
+            .string_list("general", "provider-order")
+            .expect("the order is written as a list")
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        assert_eq!(order, ["files"]);
     }
 
     fn test_config(path: &str) -> Config {

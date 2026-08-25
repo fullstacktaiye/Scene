@@ -23,8 +23,6 @@ desktop capability that is actually available.
 - A keyboard-first search surface for applications, actions, and integrations.
 - A small system workspace tool with visible execution state and errors.
 - A KDE-first product with explicit capability reporting on other sessions.
-- A foundation for named workspace/application groups, initially called
-  Stage Manager.
 
 ### What Scene is not
 
@@ -32,7 +30,7 @@ desktop capability that is actually available.
 - An opaque plugin marketplace or a mechanism for arbitrary unreviewed code to
   run with implicit privileges.
 - A package manager that assumes one distribution, command, or privilege model.
-- A universal window-layout engine in its first Stage Manager prototype.
+- A window tiling, layout, or compositor-control engine.
 - A promise that every Linux desktop or Copilot-key implementation behaves the
   same way.
 
@@ -101,14 +99,6 @@ understand.
    interaction.
 4. Scene reports the final result, including permission or missing-tool
    failures. The action never implies success from merely starting a process.
-
-### Switch a work context (future)
-
-1. The user searches for a named Scene workspace/application group.
-2. Scene shows the group and its associated applications.
-3. The user selects it to request a desktop-specific workspace switch.
-4. On success, the context changes. On failure or unsupported capability, the
-   current session is left intact and Scene explains the limitation.
 
 ## 4. Interaction and visual direction
 
@@ -269,9 +259,9 @@ unsupported desktop capabilities where practical.
 ### KDE Plasma first
 
 KDE Plasma is the first desktop target for global activation, application
-launch, startup integration, and the eventual Stage Manager prototype. KDE or
-compositor-specific behavior belongs in `platform`, with capability checks and
-manual validation at the desktop boundary.
+launch, and startup integration. KDE or compositor-specific behavior belongs
+in `platform`, with capability checks and manual validation at the desktop
+boundary.
 
 ### Global activation and Copilot key
 
@@ -513,12 +503,15 @@ claiming an outcome: `Outcome::Started` is a different answer from
 `Outcome::Succeeded`, and the built-in "What Scene Reports" result states the
 limit in words.
 
-**Deferred, with a target milestone.** One item in this area is deliberately
-not closed here and is not left implicit: `docs/krunner-parity.md` P1's
-support for a desktop entry's declared additional actions ("New Private
-Window", "Open a New Document"). It belongs with the inline-actions work in
-**Milestone 6** / parity P6, where a result can carry several operations,
-rather than as a special case in application discovery.
+**Deferred, with a target milestone — and since closed.** One item in this
+area was deliberately not closed here and not left implicit:
+`docs/krunner-parity.md` P1's support for a desktop entry's declared additional
+actions ("New Private Window", "Open a New Document"). It belonged with the
+inline-actions work in **Milestone 6** / parity P6, where a result can carry
+several operations, rather than as a special case in application discovery.
+Milestone 6 delivered it: `apps.rs` reads `DesktopAppInfo::list_actions` into
+the shared typed inline-action model, reachable with `Ctrl+K`. No deferral from
+Milestones 0-4 is still outstanding.
 
 ### Milestone 5 — Global activation and Copilot-key support
 
@@ -590,22 +583,6 @@ remains open until the one-week, KRunner-unbound field trial described in
 [`docs/krunner-parity.md`](docs/krunner-parity.md) is finished and its gaps are
 recorded. Code completion is not being substituted for daily-driver evidence.
 
-### Milestone 7 — Stage Manager prototype
-
-**User-visible outcome:** A user can switch between at least two practical
-named work contexts when the desktop session supports the required behavior.
-
-**Checklist:**
-
-- [ ] Create, rename, select, and delete named scenes.
-- [ ] Associate applications with a scene.
-- [ ] Switch scenes through the launcher.
-- [ ] Isolate KDE/desktop-specific operations behind `platform`.
-- [ ] Disable the feature when required compositor/session capabilities are
-      unavailable.
-- [ ] Ensure a failed switch leaves the current session intact.
-- [ ] Document and manually validate the KDE behavior.
-
 ### Milestone 8 — Packaging and release quality
 
 **User-visible outcome:** Scene can be installed, started, upgraded, and
@@ -613,32 +590,110 @@ validated reproducibly on its supported Linux targets.
 
 **Checklist:**
 
-- [ ] Fedora package.
-- [ ] Debian package.
-- [ ] Arch package.
+- [x] Fedora package.
+- [x] Debian package.
+- [x] Arch package.
 - [x] User-level autostart configuration.
-- [ ] Versioned configuration migration.
-- [ ] Reproducible development and packaging instructions.
+- [x] Versioned configuration migration.
+- [x] Reproducible development and packaging instructions.
 - [x] Focused unit, hermetic integration, and UI smoke suites.
-- [ ] Startup, indexing, search-latency, and idle-memory measurements.
-- [ ] Release documentation includes known desktop and capability limits.
+- [x] Startup, indexing, search-latency, and idle-memory measurements.
+- [x] Release documentation includes known desktop and capability limits.
 
-Two Milestone 8 deliverables arrived with Milestone 6 and are complete
-independently of the remaining packaging work. Scene Settings can atomically
-install or remove a user autostart entry that launches the installed binary in
-resident `--background` mode; foreground and background startup were exercised
-on KDE Plasma. The automated suite now combines focused ranking, parsing,
-configuration, capability, policy, and failure tests with fake-executable
-subprocess integration tests and an opt-in, isolated GTK keyboard smoke test.
-The smoke test covers activation, focus, searching, navigation, inline actions,
-confirmation, cancellation, status reporting, and repeated presentation.
+**What was done, and what it proves.**
 
-The configuration file carries a format marker, but there is not yet an
-upgrade path between two real schema versions, so **versioned configuration
-migration remains open**. Likewise, installation instructions and capability
-notes are not substitutes for reproducible distro packages, recorded
-performance measurements, or release documentation; those checklist items
-remain open.
+*Autostart and the suites* arrived with Milestone 6 and were already complete.
+Scene Settings atomically installs or removes a user autostart entry that
+launches the installed binary in resident `--background` mode, and the
+automated suite combines focused ranking, parsing, configuration, capability,
+policy and failure tests with fake-executable subprocess tests and the
+isolated GTK keyboard smoke test.
+
+*Packages.* `packaging/` holds one definition per family — `fedora/scene.spec`,
+`debian/`, `arch/PKGBUILD` — and `scripts/package.sh` builds each in a
+container of that distribution. All three install the same layout:
+`/usr/bin/scene`, the desktop entry, the AppStream metainfo, Scene's own icon
+under `hicolor/scalable/apps`, `scene.1`, and the licence with a per-crate
+`LICENSE.dependencies`. Two of those files did not exist before this milestone:
+the icon (the launcher surface itself, in `style.css`'s palette, replacing a
+borrowed stock `system-search`) and the manual page.
+
+Two properties make this more than three build files, and a change that breaks
+either is a regression. Every build is **offline**: `scripts/release-tarball.sh`
+produces the sources and a `cargo vendor` tarball fixed by `Cargo.lock`, and
+both are byte-for-byte reproducible from an unchanged tree. And every build
+installs its dependencies **from the packaging metadata itself** — `dnf
+builddep` on the source RPM, `mk-build-deps` on `debian/control`, `makepkg
+--syncdeps` on the `PKGBUILD` — so an incomplete dependency list fails the
+build instead of borrowing something the image happened to carry. That is what
+a mock build is really there to prove; mock itself needs privileges a container
+does not have and remains unrun, which `docs/fedora-packaging.md` records
+rather than glosses. Each build also runs `cargo test`, so no package can come
+from a tree whose tests fail.
+
+Building them found two things worth stating rather than smoothing over.
+Fedora's Rust guidelines expect an application to build against packaged
+crates; Scene's lockfile resolves 131 of them, so the spec bundles them, states
+every bundled licence in its `License` tag, and ships the per-crate breakdown —
+which means this spec is built and installed locally, not submitted to Fedora.
+And **Debian 13 cannot build Scene with its own toolchain**: the gtk4-rs 0.11
+crate tree needs rustc 1.92, trixie ships 1.85 and trixie-backports has nothing
+newer, so the `.deb` is built in Debian unstable and `Cargo.toml` now states
+the requirement instead of leaving it to be discovered.
+
+*Versioned configuration migration.* The format marker existed but nothing read
+it, so there was no migration to speak of. The file now carries version 2 and
+there is a real upgrade from version 1: `history-enabled` became
+`ranking-history-enabled`, because it governs the ranking adjustment and sat
+one word away from `command-history-enabled`, which is a provider; and the
+per-provider `priority` integers became one `provider-order` list, because
+reordering wrote dense positions into a file whose defaults are spaced, so a
+provider added by a later Scene could arrive in the middle of an order the user
+had chosen. Three rules hold it: `Config::load` never writes, because it runs
+again for every keystroke that reaches `answers`; an upgrade keeps the previous
+file as `config.ini.format-1`; and a file from a *newer* Scene is read for what
+this Scene recognises and copied aside before `save` can ever replace it. The
+interpreting is a pure function over a loaded key file, so all of it is tested
+without touching the user's configuration.
+
+*Measurements.* `scene --measure` reports what this machine costs: process
+start to first frame, activation to first frame, desktop-entry and
+provider-index timings including a per-provider breakdown, ranking and
+whole-keystroke latency at the median and 95th percentile, and the resident set
+of a launcher that has presented its window. It labels what it cannot know —
+Scene cannot see whether the page cache was cold — and leaves that to the
+recorded run in `docs/measurements.md`.
+
+It paid for itself on the first run. Process start to first frame was 5.6
+seconds, and the per-provider breakdown put 5.005 of them in one place: the
+bookmark provider. Firefox holds a write lock on `places.sqlite` for as long as
+it runs, so a read-only connection waited out SQLite's five-second busy timeout
+and then reported the database as locked — five seconds in front of every start
+for no bookmarks at all. Reading the file immutably instead takes no lock:
+bookmarks now arrive in 1.2 ms, 144 of them, and start to first frame is 0.4 s.
+The cost of that choice is stated rather than hidden — an immutable read sees
+the last checkpoint, so a bookmark added moments ago can be missing until
+Firefox writes it back.
+
+The recorded run also says where the remaining time goes and what did not
+resolve. Ranking is not the cost — about half a millisecond over 461 items —
+and the four milliseconds a keystroke takes is the providers answering, well
+inside a frame. Memory is the open one: a launcher that has presented once
+holds 108 MiB, and forty or four hundred synthetic activations do not grow it,
+but the instance that had been resident and in use for five hours on this
+machine held 424 MiB, almost all of it anonymous. That is recorded rather than
+explained, so `docs/krunner-parity.md` §3.1's idle-memory item stays open: a
+resident launcher costing that much needs a stated reason, and there is not one
+yet. The next measurement to take is a resident instance driven with real
+typing, which belongs with Milestone 6's field trial.
+
+*Release documentation.* `docs/release-notes.md` states what this release is,
+what it was verified on, and every known limit: the Wayland placement boundary,
+the missing activation token from a shell, the Copilot key's unbindable form,
+`Started` never meaning `Succeeded`, `pkexec` with no `sudo` fallback, the
+bookmark snapshot, Baloo's index rather than one of Scene's own, and what is
+still unproven — the one-week field trial, the launcher never having been run
+on a Debian or Arch desktop, and the accessibility items in the parity track.
 
 ## 9. Testing and acceptance standards
 
@@ -688,14 +743,15 @@ Performance targets should be chosen after a baseline exists. The goal is a
 responsive native launcher, not a misleading target achieved by omitting
 indexing, errors, accessibility, or capability checks.
 
+**The baseline now exists.** Milestone 8 added `scene --measure`, which reports
+startup, indexing (including a per-provider breakdown), ranking and
+whole-keystroke latency, and the resident set of a presented launcher, on the
+machine that runs it. Recorded runs live in `docs/measurements.md`, with their
+conditions stated — including the ones Scene cannot observe, such as whether
+the page cache was cold. Action completion, timeout, cancellation and failure
+rates are still not measured over real use; that needs the field trial.
+
 ## 11. Deferred and alternative directions
-
-### Stage Manager scope
-
-Stage Manager initially means named workspace/application groups. It is not a
-promise of universal window tiling, compositor control, or identical behavior
-across desktops. A broader window-layout engine remains deferred until the
-platform boundaries and failure semantics are proven.
 
 ### Tauri alternative
 
@@ -723,7 +779,6 @@ prerequisites](https://tauri.app/start/prerequisites/).
 - KDE Plasma is the first desktop environment.
 - The first release proves the launcher core, not the entire product vision.
 - Copilot-key support is best effort and always has a configurable fallback.
-- Stage Manager initially means workspace/application-group switching.
 - The initial implementation is Rust plus GTK4.
 - Electron is not the recommended default because Scene is a system-integrated
   Linux application where low overhead and native process/input integration

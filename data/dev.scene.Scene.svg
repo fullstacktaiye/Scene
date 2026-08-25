@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Scene's own application icon: the launcher surface itself — a dark,
+     rounded overlay with a focused query field above ranked result rows.
+     The palette is the one src/style.css uses, so the icon and the window
+     are recognisably the same product. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B1B22"/>
+      <stop offset="1" stop-color="#121216"/>
+    </linearGradient>
+    <linearGradient id="query" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8B7BFF"/>
+      <stop offset="1" stop-color="#6F5FF0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#surface)"/>
+  <rect x="8.75" y="8.75" width="110.5" height="110.5" rx="25.25"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="1.5"/>
+
+  <!-- The query field, focused: the caret sits at the end of what was typed. -->
+  <rect x="28" y="34" width="58" height="16" rx="8" fill="url(#query)"/>
+  <rect x="92" y="32" width="5" height="20" rx="2.5" fill="#8B7BFF" fill-opacity="0.85"/>
+
+  <!-- Ranked rows beneath it, the first one selected. -->
+  <rect x="28" y="64" width="72" height="12" rx="6" fill="#F1F1F4" fill-opacity="0.46"/>
+  <rect x="28" y="84" width="50" height="12" rx="6" fill="#F1F1F4" fill-opacity="0.28"/>
+</svg>

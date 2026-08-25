@@ -3,9 +3,12 @@
 A fast, keyboard-first Linux launcher. See [`PRODUCT_PLAN.md`](PRODUCT_PLAN.md)
 for what Scene is meant to become.
 
-This repository contains the code-complete portion of **Milestone 6 — KDE
-replacement foundation**. Its final acceptance gate is the documented
-one-week KRunner-unbound field trial.
+The repository is at **Milestone 8 — packaging and release quality**: Scene
+builds as an RPM, a .deb and an Arch package, upgrades its own configuration
+between formats, and records what it costs to start, index, search and sit
+idle. One acceptance item is still open, and it is Milestone 6's: the
+documented one-week KRunner-unbound field trial, which is daily-driver evidence
+rather than code.
 
 ## Build and run
 
@@ -13,14 +16,18 @@ Scene is one Rust binary against native GTK 4.
 
 ```sh
 # Fedora
-sudo dnf install gtk4-devel
+sudo dnf install gtk4-devel sqlite-devel
 
 # Debian / Ubuntu
-sudo apt install libgtk-4-dev
+sudo apt install libgtk-4-dev libsqlite3-dev
 
 # Arch
-sudo pacman -S gtk4
+sudo pacman -S gtk4 sqlite
 ```
+
+Rust 1.92 or newer is needed — the gtk4-rs crate tree's requirement, not
+Scene's own. Fedora 44 and Arch are already past it; Debian 13 ships 1.85 and
+needs a rustup toolchain. See [`docs/packaging.md`](docs/packaging.md).
 
 ```sh
 cargo run --release
@@ -41,7 +48,13 @@ and a resident single-instance process would keep serving the old code
 regardless. The desktop entry proposes `Meta+Space` as the fallback shortcut.
 KDE remains the source of truth for the active binding and conflict handling:
 search for **Scene Settings** (or press `Ctrl+,`) to see what Scene observed
-and open KDE's native recorder. Packaging proper is Milestone 8.
+and open KDE's native recorder.
+
+To build a real package instead — Fedora, Debian and Arch, each in a container
+of that distribution — run `./scripts/package.sh`. See
+[`docs/packaging.md`](docs/packaging.md) for the procedure and
+[`docs/release-notes.md`](docs/release-notes.md) for what this release does and
+does not do.
 
 Scene registers as a single instance. Activating it while hidden presents a
 focused launcher with a cleared query; activating it again hides the same
@@ -103,18 +116,63 @@ src/
 ├── actions.rs       typed actions and their outcomes
 ├── system.rs        executable discovery and bounded subprocesses
 ├── ui.rs            window, search field, result list, footer, UI smoke suite
+├── measure.rs       what `scene --measure` reports about this machine
 └── style.css        the launcher's appearance
 
 scripts/
-└── install-user.sh  install for the current user, for the desktop shortcut
+├── install-user.sh       install for the current user, for the desktop shortcut
+├── release-tarball.sh    the reproducible source and vendor tarballs
+├── dependency-licenses.sh  what every package ships as LICENSE.dependencies
+└── package.sh            build the distro packages in containers
+
+packaging/
+├── fedora/     scene.spec and its container build
+├── debian/     debian/ and its container build
+└── arch/       PKGBUILD and its container build
 
 data/
 ├── dev.scene.Scene.desktop       the desktop entry
-└── dev.scene.Scene.metainfo.xml  AppStream metadata for packaging
+├── dev.scene.Scene.metainfo.xml  AppStream metadata for packaging
+├── dev.scene.Scene.svg           Scene's own icon
+└── scene.1                       the manual page
 ```
 
 `ui.rs` renders what `search` produced and reports what `actions` returned. It
 never decides either, so the styling can change without touching the logic.
+
+## Milestone 8 status
+
+- [x] **Packages for Fedora, Debian and Arch.** `packaging/` holds one
+      definition per family and `./scripts/package.sh` builds each in a
+      container of that distribution, offline, from a reproducible release
+      tarball and the `cargo vendor` tarball beside it. Each build installs its
+      dependencies from the packaging metadata itself — `dnf builddep`,
+      `mk-build-deps`, `makepkg --syncdeps` — so an incomplete dependency list
+      fails the build rather than borrowing something the image had. Each also
+      runs `cargo test`.
+- [x] **Versioned configuration migration.** The file now carries format 2 and
+      there is a real upgrade from format 1: `history-enabled` became
+      `ranking-history-enabled`, and the per-provider `priority` integers
+      became one `provider-order` list. The previous file is kept as
+      `config.ini.format-1`, and a file written by a *newer* Scene is never
+      replaced without a copy being kept first.
+- [x] **Measurements.** `scene --measure` reports startup, indexing with a
+      per-provider breakdown, ranking and whole-keystroke latency, and the
+      resident set. Recorded in [`docs/measurements.md`](docs/measurements.md).
+- [x] **Reproducible instructions** in [`docs/packaging.md`](docs/packaging.md),
+      and **release documentation with the known limits** in
+      [`docs/release-notes.md`](docs/release-notes.md).
+- [x] User-level autostart and the unit, hermetic-integration and UI smoke
+      suites — both delivered with Milestone 6.
+
+Two things the packaging work turned up, recorded rather than smoothed over:
+**Debian 13 cannot build Scene with its own toolchain** (the gtk4-rs 0.11 crate
+tree needs rustc 1.92, trixie ships 1.85, backports has nothing newer), so the
+`.deb` is a Debian unstable package and will not install on trixie; and the first measurement run found **5.6
+seconds** between process start and first frame, of which 5.005 were one
+provider waiting on a lock Firefox holds over `places.sqlite`. Reading that
+file immutably instead, start to first frame is **0.4 s** and 144 bookmarks
+arrive in 1.2 ms.
 
 ## Milestone 6 status
 
@@ -187,8 +245,9 @@ quietly mean "done except for the parts nobody is tracking".
       logged: the repository declared MIT with no `LICENSE` file for
       `%license` to point at, and shipped no AppStream metainfo, which a GUI
       application is expected to install. `data/dev.scene.Scene.metainfo.xml`
-      passes `appstreamcli validate --no-net`. The spec file, an icon of
-      Scene's own, screenshots and a mock build are Milestone 8's.
+      passes `appstreamcli validate --no-net`. Milestone 8 then added the spec
+      file and an icon of Scene's own; screenshots still need a published URL,
+      and a mock build still needs privileges a container does not have.
 - [x] **Launched-program outcomes.** A detached program is now watched for
       400 ms: one that dies in that window reports its real exit status
       instead of the success Scene used to claim, and if the launcher has
@@ -348,7 +407,7 @@ Verified on Fedora 44, KDE Plasma, Wayland, GTK 4.22.
 - [x] Keyboard-only smoke path — covered by the UI smoke suite added in
       Milestone 4.5, which drives the whole contract against real widgets.
 
-Seventy-six tests cover ranking determinism, grouping, case and whitespace
+Ninety tests cover ranking determinism, configuration migration, grouping, case and whitespace
 handling, category labelling, provider isolation, package-name validation,
 capability detection, adapter argument vectors, history bounds and
 persistence, launch watching, and the action outcomes for missing executables,
@@ -396,3 +455,6 @@ cargo test
 cargo fmt --check
 cargo clippy --all-targets
 ```
+
+Every distro package build runs `cargo test` too, so a package cannot be
+produced from a tree whose tests fail.

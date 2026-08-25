@@ -1,0 +1,44 @@
+#!/usr/bin/make -f
+# Scene is one binary, so this is deliberately a small rules file: dh does the
+# packaging, and each override is here only because the build is offline
+# against the vendored crates the release tarball ships.
+
+export DH_VERBOSE = 1
+export CARGO_HOME = $(CURDIR)/debian/cargo
+export CARGO_TARGET_DIR = $(CURDIR)/target
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	mkdir -p .cargo
+	printf '[source.vendored-sources]\ndirectory = "vendor"\n\n[source.crates-io]\nreplace-with = "vendored-sources"\n' > .cargo/config.toml
+
+# With debug info, so dh_strip's automatic -dbgsym package carries real symbols
+# instead of an empty file. It has to be set on the profile: cargo passes the
+# profile's own -Cdebuginfo after $RUSTFLAGS, so a flag there loses. Fedora
+# reaches the same place through the [profile.rpm] that %cargo_prep writes.
+override_dh_auto_build:
+	CARGO_PROFILE_RELEASE_DEBUG=2 cargo build --release --locked --offline
+
+# Scene's own suite. The GTK smoke test prints its reason and passes where
+# there is no display, which is every build environment.
+override_dh_auto_test:
+	cargo test --release --locked --offline
+
+override_dh_auto_install:
+	install -D -m0755 target/release/scene debian/scene/usr/bin/scene
+	install -D -m0644 data/dev.scene.Scene.desktop debian/scene/usr/share/applications/dev.scene.Scene.desktop
+	install -D -m0644 data/dev.scene.Scene.metainfo.xml debian/scene/usr/share/metainfo/dev.scene.Scene.metainfo.xml
+	install -D -m0644 data/dev.scene.Scene.svg debian/scene/usr/share/icons/hicolor/scalable/apps/dev.scene.Scene.svg
+	install -D -m0644 data/scene.1 debian/scene/usr/share/man/man1/scene.1
+	install -D -m0644 LICENSE.dependencies debian/scene/usr/share/doc/scene/LICENSE.dependencies
+
+override_dh_auto_clean:
+	rm -rf target .cargo debian/cargo
+
+# dh_clean deletes every *.orig file it finds, and each vendored crate carries
+# a Cargo.toml.orig that its checksum covers. Without this exclusion the build
+# fails with "failed to calculate checksum" before it compiles a line.
+override_dh_clean:
+	dh_clean -X.orig

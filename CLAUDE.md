@@ -6,25 +6,32 @@ Scene is a keyboard-first Linux launcher: one Rust binary against native GTK 4,
 KDE Plasma / Wayland first. `PRODUCT_PLAN.md` is the product authority and
 milestone tracker; `AGENTS.md` holds the contributor conventions (commit style,
 naming, module ownership) and applies here too. `docs/krunner-parity.md`,
-`docs/copilot-key.md` and `docs/fedora-packaging.md` record verified machine
+`docs/copilot-key.md`, `docs/fedora-packaging.md`, `docs/packaging.md`,
+`docs/measurements.md` and `docs/release-notes.md` record verified machine
 findings, not aspirations — correct them rather than working around them in
 code.
 
-The repository is at **Milestone 5** (global activation and Copilot-key
-support).
+The repository is at **Milestone 8** (packaging and release quality). The
+milestone numbering skips one, deliberately: the plan lists 0-6 and then 8.
+One acceptance item is open, in Milestone 6 — the one-week KRunner-unbound
+field trial, which is daily-driver evidence rather than code.
 
 ## Commands
 
 ```sh
 cargo run --release                     # build and launch
-cargo test                              # 76 tests: 75 hermetic, 1 UI smoke
+cargo test                              # 90 tests: 89 hermetic, 1 UI smoke
 cargo test ranking_is_stable_across_runs  # one test by name
 cargo test search::tests                # one module's tests
 cargo test ui::tests -- --nocapture     # the UI smoke suite alone
 cargo fmt --check
 cargo clippy --all-targets
 desktop-file-validate data/dev.scene.Scene.desktop   # after editing the entry
+man -l data/scene.1                     # after editing the manual page
 ./scripts/install-user.sh               # make the desktop shortcut run this build
+./scripts/release-tarball.sh            # the two tarballs a package is built from
+./scripts/package.sh [fedora|debian|arch]  # build packages in containers
+scene --measure                         # this machine's startup/latency/memory
 ```
 
 GTK4 development headers are a prerequisite (`gtk4-devel` / `libgtk-4-dev` /
@@ -44,7 +51,10 @@ The UI smoke suite opens a real window for a fraction of a second while
 
 ## Architecture
 
-One dependency (gtk4), Rust 2024, eight modules with a deliberate one-way flow:
+Rust 2024, nine modules with a deliberate one-way flow. GTK 4 is the only
+dependency that shapes the architecture; the rest are leaf libraries a single
+provider uses (`rusqlite` for bookmarks, `fend-core` for the calculator,
+`ureq` for currency rates, and so on):
 
 ```
 apps ─────────┐
@@ -53,6 +63,8 @@ packages ─────┼─> integrations ─> search (ranks) ─> ui (render
               └───────────────────────────────────────┴─> actions ─> system
                                                              (subprocess only)
 platform (observes KDE/session state) ─────────────────> ui
+
+measure (--measure only) ─> apps, integrations, search, ui
 ```
 
 `search` sees two streams: `index()` for what exists regardless of the query,
@@ -83,6 +95,10 @@ Both are ranked by the same matcher, in one list.
 - **`platform`** observes the desktop session and Scene's active KDE shortcut,
   classifies only Copilot-key evidence Scene actually receives, and describes
   KDE's recorder as a typed action. It never writes desktop or XKB settings.
+- **`measure`** exists for `scene --measure` and nothing else: it builds one
+  launcher, times the start, indexing, per-provider indexing, ranking and
+  keystroke latency, and reads this process's resident set. It observes and
+  prints; it changes nothing. Recorded runs live in `docs/measurements.md`.
 - **`main`** owns lifecycle only: one `Rc<ui::Launcher>` for the process, so a
   second activation toggles the existing window instead of creating another.
 
@@ -165,6 +181,26 @@ make a keyword match outrank a title match. Group order is untouched because
 the bonus is inside the score, not the priority. State lives in
 `$XDG_STATE_HOME/scene/history`, whose first line names its format version.
 
+### Configuration and its format version
+
+`integrations::Config` is read from `$XDG_CONFIG_HOME/scene/config.ini` and
+carries a `[format] version`. Three rules hold it together:
+
+1. `Config::load` never writes. It runs again for every keystroke that reaches
+   `answers`, so a write there would be a write per keystroke.
+   `migrate_configuration` does the upgrading, once, from `main`.
+2. Bump `FORMAT_VERSION` when the meaning of a key changes, not when a key is
+   added: an unknown key is ignored and a missing one falls back to its
+   default, so additions need no migration. Renames and changed meanings do,
+   and the old spelling is then read only under `Format::Upgraded`.
+3. An upgrade keeps the previous file as `config.ini.format-N`, and a file from
+   a *newer* Scene is copied aside before `save` ever replaces it. Scene does
+   not discard settings it does not understand.
+
+`Config::interpret` is where a format is decided and applied, and it takes a
+loaded `glib::KeyFile` rather than a path, so every migration is tested without
+touching the user's configuration.
+
 ### Outcome rendering
 
 `Outcome` drives four exhaustive `match`es (`message`, `prefix`, `icon`,
@@ -190,6 +226,33 @@ physical key press to that controller, which stays a manual check. Keep it one
 test function, keep it skipping cleanly without a display, and keep its
 history disabled so it never writes to the user's state file.
 
+## Packaging
+
+`packaging/` holds one definition per family — `fedora/scene.spec`,
+`debian/`, `arch/PKGBUILD` — and a `Dockerfile` beside each that builds it in a
+container of that distribution. `scripts/package.sh` drives them and
+`scripts/release-tarball.sh` makes what they build from.
+
+Three properties are the point, and a change that breaks one is a regression:
+
+- **Offline.** Every build resolves its crates from the vendor tarball, never
+  from crates.io. Fedora's `%cargo_prep -v vendor` writes that configuration
+  itself; the other two write `.cargo/config.toml` in their build recipe.
+- **Dependencies come from the packaging metadata.** `dnf builddep` on the
+  source RPM, `mk-build-deps` on `debian/control`, `makepkg --syncdeps` on the
+  `PKGBUILD`. An incomplete list has to fail the build rather than borrow
+  something the image happened to carry.
+- **Same layout everywhere:** `/usr/bin/scene`, the desktop entry, the
+  AppStream metainfo, `dev.scene.Scene.svg` under `hicolor/scalable/apps`,
+  `scene.1`, and the licence plus the generated `LICENSE.dependencies`. Adding
+  an installed file means adding it to all three, and to
+  `scripts/install-user.sh`, which is the development path to the same layout
+  under `~/.local`.
+
+Each build also runs `cargo test`; the GTK smoke test skips itself with a
+printed reason where there is no display. `docs/packaging.md` is the procedure
+and the record of what it produced.
+
 ## Platform realities to respect
 
 - A Wayland client cannot place its own window; centring is a KWin setting.
@@ -199,3 +262,9 @@ history disabled so it never writes to the user's state file.
   and opens behind other windows — the global shortcut is the real path.
 - The Copilot key is a `Shift+Super+F23` chord emitting `XF86Assistant`, which
   Qt cannot bind. See `docs/copilot-key.md` before promising support for it.
+- Firefox holds a write lock on `places.sqlite` for as long as it runs. A plain
+  read-only connection waits out SQLite's five-second busy timeout and then
+  reports the database as locked — five seconds in front of every start,
+  measured with `--measure`, for no bookmarks. The bookmark provider therefore
+  opens it with `immutable=1`, which takes no lock and reads the last
+  checkpoint. Do not "fix" that back into an ordinary connection.

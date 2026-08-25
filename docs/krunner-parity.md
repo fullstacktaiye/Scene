@@ -152,7 +152,11 @@ KRunner is fast and users notice regressions immediately. Targets are set
 after a baseline exists (`PRODUCT_PLAN.md` §10), but the shape is fixed:
 
 - [ ] Activation to a focused, typeable search field is not perceptibly slower
-      than KRunner on the same machine, measured cold and warm.
+      than KRunner on the same machine, measured cold and warm. Scene's half is
+      measured (`M8`, `docs/measurements.md`): 145-260 ms from activation to
+      first frame for a resident instance, 379-485 ms for a cold process. The
+      comparison is not, because KRunner is not resident in this session and
+      starting it to time it would time a cold start.
 - [ ] No provider blocks the UI thread. A slow provider delays only its own
       results.
 - [ ] Results for a keystroke either arrive or are superseded; a stale query's
@@ -160,7 +164,12 @@ after a baseline exists (`PRODUCT_PLAN.md` §10), but the shape is fixed:
 - [ ] Every provider has a timeout, and exceeding it is a visible state rather
       than a silently missing result group.
 - [ ] Idle memory is measured and recorded; a resident launcher that costs
-      more than KRunner needs a stated reason.
+      more than KRunner needs a stated reason. Half met by `M8`: measured and
+      recorded in `docs/measurements.md` — 108 MiB for a launcher that has
+      presented once, and 424 MiB for the instance that had been resident and
+      in use for five hours on this machine. Forty and four hundred synthetic
+      activations do not reproduce that growth, so the reason is not yet
+      stated, and the item stays open until it is.
 
 ### 3.2 Ranking
 

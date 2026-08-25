@@ -2,6 +2,9 @@
 name = "scene"
 version = "0.1.0"
 edition = "2024"
+# The gtk4-rs 0.11 crate tree requires this; stating it here makes a toolchain
+# that cannot build Scene say so before it starts. Debian 13 ships 1.85.
+rust-version = "1.92"
 description = "A fast, keyboard-first Linux launcher"
 license = "MIT"
 

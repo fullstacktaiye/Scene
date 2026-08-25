@@ -13,9 +13,21 @@ module:
   command strings through search or UI code.
 - `src/ui.rs` renders state and connects GTK signals without making search or
   execution decisions. Styling belongs in `src/style.css`.
+- `src/integrations.rs` holds the provider registry and typed configuration;
+  `src/packages.rs` the distro capability adapters; `src/platform.rs` the
+  desktop-session and shortcut observations; `src/system.rs` the only generic
+  subprocess execution.
+- `src/measure.rs` backs `scene --measure` and nothing else. Keep measurement
+  code there rather than in the modules it measures.
 
-Desktop metadata is in `data/dev.scene.Scene.desktop`. Product direction lives
-in `PRODUCT_PLAN.md`; parity and optional-integration notes live under `docs/`.
+Installed data is in `data/`: the desktop entry, the AppStream metainfo,
+Scene's own icon, and the `scene.1` manual page. Packaging definitions are in
+`packaging/`, one per distribution family, driven by `scripts/package.sh`. A
+file that a package installs has to be installed by all three definitions and
+by `scripts/install-user.sh`.
+
+Product direction lives in `PRODUCT_PLAN.md`; parity, packaging, measurement
+and release notes live under `docs/`.
 
 ## Build, Test, and Development Commands
 
@@ -27,6 +39,7 @@ cargo run --release       # build and launch the optimized launcher
 cargo test                # run hermetic unit tests
 cargo fmt --check         # verify Rust formatting
 cargo clippy --all-targets # lint production and test code
+./scripts/package.sh      # build the distro packages in containers
 ```
 
 Run `cargo fmt` before committing when formatting is needed. Validate edits to
